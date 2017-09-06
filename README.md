@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/jonbaldie/beanstalkd.svg?branch=master)](https://travis-ci.org/jonbaldie/beanstalkd)
 
-Steps to use:
+To use:
 
 `docker pull jonbaldie/beanstalkd`
 
