@@ -1,6 +1,6 @@
 ### Beanstalkd Docker Repository
 
-[![Build Status](https://travis-ci.org/jonbaldie/beanstalkd.svg?branch=master)](https://travis-ci.org/jonbaldie/beanstalkd)
+[![Build Status](https://travis-ci.org/jonbaldie/beanstalkd.svg?branch=master)](https://travis-ci.org/jonbaldie/beanstalkd) [![Docker Pulls](https://img.shields.io/docker/pulls/jonbaldie/beanstalkd.svg)](https://hub.docker.com/jonbaldie/beanstalkd)
 
 To use:
 
