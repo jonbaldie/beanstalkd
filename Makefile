@@ -4,6 +4,3 @@ build:
 test: build
 	./test.sh
 
-mutation-test: build
-	./mutation_test.sh
-
