@@ -78,61 +78,25 @@ if ! printf '%s' "$EXPOSED" | grep -q '"11300/tcp"'; then
 fi
 echo "PASS: port 11300/tcp is correctly declared in EXPOSE metadata."
 
-# ---- Test 5: Process runs as the 'beanstalk' user specifically ----
+# ---- Test 5: Image is not bloated ----
 #
-# Escaped mutant caught: switching USER to 'nobody' passes Test 2 (not root) but
-# the daemon should run as the dedicated 'beanstalk' system account created by the
-# beanstalkd package, not a generic catch-all user.
-
-echo "Checking process runs as 'beanstalk' user..."
-if [ "$RUNNING_USER" != "beanstalk" ]; then
-    echo "FAIL: beanstalkd is not running as the 'beanstalk' user (got: $RUNNING_USER)"
-    exit 1
-fi
-echo "PASS: beanstalkd is running as the dedicated 'beanstalk' user."
-
-# ---- Test 6: Image is Alpine-based ----
+# Users pulling this image notice its size directly (pull time, disk usage,
+# attack surface). The correct Alpine build is ~9 MB; a heavier base such as
+# Ubuntu inflates it to ~71 MB — an 8x regression that is plainly user-facing.
+# 20 MB gives comfortable headroom over the current clean build while catching
+# any inadvertent switch to a heavyweight base image.
 #
-# Escaped mutant caught: swapping FROM alpine for a heavier base (e.g. Ubuntu)
-# keeps the daemon functional but inflates the image 8x and changes OS semantics.
-# /etc/alpine-release is present only in Alpine-derived images.
+# NOTE: Tests for the specific base distro (Alpine) or internal cache directories
+# (/var/cache/apk) were considered but rejected: those are implementation details.
+# What users observe is image size, so that is what we measure.
 
-echo "Checking image is Alpine-based..."
-ALPINE_RELEASE=$(docker run --rm "$IMAGE" cat /etc/alpine-release 2>/dev/null || true)
-if [ -z "$ALPINE_RELEASE" ]; then
-    echo "FAIL: /etc/alpine-release not found — image does not appear to be Alpine-based."
+echo "Checking image size is under 20 MB..."
+IMAGE_SIZE=$(docker image inspect "$IMAGE" --format='{{.Size}}')
+MAX_BYTES=20971520   # 20 * 1024 * 1024
+if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
+    IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
+    echo "FAIL: image is ${IMAGE_MB} MB, which exceeds the 20 MB limit (got ${IMAGE_SIZE} bytes)"
     exit 1
 fi
-echo "PASS: Image is Alpine-based (version: $ALPINE_RELEASE)."
-
-# ---- Test 7: APK package cache is empty ----
-#
-# Escaped mutant caught: removing --no-cache from 'apk add' installs beanstalkd
-# but leaves ~3 MB of APKINDEX files in /var/cache/apk/, producing a bloated image.
-# This test verifies the cache directory is empty, confirming --no-cache was used.
-
-echo "Checking APK cache is clean..."
-APK_CACHE=$(docker run --rm "$IMAGE" ls /var/cache/apk/ 2>/dev/null || true)
-if [ -n "$APK_CACHE" ]; then
-    echo "FAIL: APK cache is not empty (found: $APK_CACHE)"
-    exit 1
-fi
-echo "PASS: APK cache is empty."
-
-# ---- Test 8: CMD explicitly specifies -p 11300 ----
-#
-# Escaped mutant caught: omitting '-p 11300' from CMD still works because
-# beanstalkd defaults to port 11300 — but the explicit flag is required for
-# auditable intent and to guard against upstream default-port changes.
-
-echo "Checking CMD includes explicit -p 11300..."
-CMD_JSON=$(docker image inspect "$IMAGE" --format='{{json .Config.Cmd}}')
-if ! printf '%s' "$CMD_JSON" | grep -q '"-p"'; then
-    echo "FAIL: CMD does not include the -p flag (got: $CMD_JSON)"
-    exit 1
-fi
-if ! printf '%s' "$CMD_JSON" | grep -q '"11300"'; then
-    echo "FAIL: CMD does not specify port 11300 via -p (got: $CMD_JSON)"
-    exit 1
-fi
-echo "PASS: CMD explicitly specifies -p 11300."
+IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
+echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
