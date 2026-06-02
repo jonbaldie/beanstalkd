@@ -4,3 +4,7 @@
 .dolt/
 *.db
 .beads-credential-key
+
+# Tool directories — ignored from version control; kept locally
+.beads/
+.serena/

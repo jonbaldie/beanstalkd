@@ -1,7 +1,0 @@
-{
-  "database": "dolt",
-  "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "beanstalkd",
-  "project_id": "8dc14387-8fb8-487e-a2c0-0a0adb224d00"
-}
