@@ -1,0 +1,25 @@
+name: Mutation Tests
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build base image
+      run: make build
+
+    - name: Run mutation testing audit
+      run: chmod +x mutation_test.sh && ./mutation_test.sh
