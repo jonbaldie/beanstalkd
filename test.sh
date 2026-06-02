@@ -77,3 +77,26 @@ if ! printf '%s' "$EXPOSED" | grep -q '"11300/tcp"'; then
     exit 1
 fi
 echo "PASS: port 11300/tcp is correctly declared in EXPOSE metadata."
+
+# ---- Test 5: Image is not bloated ----
+#
+# Users pulling this image notice its size directly (pull time, disk usage,
+# attack surface). The correct Alpine build is ~9 MB; a heavier base such as
+# Ubuntu inflates it to ~71 MB — an 8x regression that is plainly user-facing.
+# 20 MB gives comfortable headroom over the current clean build while catching
+# any inadvertent switch to a heavyweight base image.
+#
+# NOTE: Tests for the specific base distro (Alpine) or internal cache directories
+# (/var/cache/apk) were considered but rejected: those are implementation details.
+# What users observe is image size, so that is what we measure.
+
+echo "Checking image size is under 20 MB..."
+IMAGE_SIZE=$(docker image inspect "$IMAGE" --format='{{.Size}}')
+MAX_BYTES=20971520   # 20 * 1024 * 1024
+if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
+    IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
+    echo "FAIL: image is ${IMAGE_MB} MB, which exceeds the 20 MB limit (got ${IMAGE_SIZE} bytes)"
+    exit 1
+fi
+IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
+echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
