@@ -52,12 +52,9 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+make build    # Build Docker image jonbaldie/beanstalkd:latest
+make test     # Build image and run integration tests (test.sh)
 ```
 
 ## Architecture Overview
