@@ -4,6 +4,7 @@
 .dolt/
 *.db
 .beads-credential-key
+.beads.gate.lock
 
 # Tool directories — ignored from version control; kept locally
 .beads/
