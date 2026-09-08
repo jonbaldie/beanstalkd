@@ -3,4 +3,5 @@ build:
 
 test: build
 	./test_test.sh
+	./test_cleanup.sh
 	./test.sh
