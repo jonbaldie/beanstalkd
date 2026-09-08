@@ -17,8 +17,8 @@ PERSISTENCE_VOLUME="beanstalkd-persistence-test-$$"
 
 cleanup() {
     echo "Tearing down containers..."
-    docker rm -f "$CONTAINER_NAME" > /dev/null 2>&1 || true
-    docker rm -f "$PERSISTENCE_CONTAINER_NAME" > /dev/null 2>&1 || true
+    docker rm -fv "$CONTAINER_NAME" > /dev/null 2>&1 || true
+    docker rm -fv "$PERSISTENCE_CONTAINER_NAME" > /dev/null 2>&1 || true
     docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
 }
 
