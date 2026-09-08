@@ -5,16 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.1] - 2026-09-08
 
 ### Fixed
 - `test.sh` maps a random localhost port instead of host :11300, so `make test`
-  no longer fails with docker exit 125 when that port is already allocated (#25).
+  no longer fails with docker exit 125 when that port is already allocated (#25, #28).
 - Removed `VOLUME ["/data"]` from the image: a default (non-persistent) run
   attached an unused anonymous volume to `/data`, and `docker rm -f` never
-  deletes anonymous volumes, so they accumulated on the host (#24). Named-volume
+  deletes anonymous volumes, so they accumulated on the host (#24, #27). Named-volume
   persistence (`docker run -v vol:/data ... beanstalkd -b /data`) is unchanged;
   the beanstalk-owned `/data` directory in the image is what makes it work.
+- `test.sh` cleans up anonymous `/data` volumes on teardown using `docker rm -fv` (#26).
+- `test.sh` assigns container names before execution to guarantee cleanup of
+  created containers even when `docker run` fails early (#22).
+- Pre-created `/data` with `beanstalk:daemon` ownership in `Dockerfile`, allowing
+  the unprivileged `beanstalk` daemon user to acquire WAL locks when using
+  Docker-managed named persistence volumes (#21).
+- Added pre-flight check in `test.sh` to fail fast with a clear error message
+  when host dependency `python3` is missing (#19, #20).
+- Fixed `test.sh` process inspection to query the daemon's effective user in the
+  container process table (`ps -o user,comm`) rather than evaluating a transient
+  `whoami` exec process (#9, #14).
+- Inlined package installation in `Dockerfile` via `apk add --no-cache beanstalkd`,
+  resolving Hadolint DL3020 and eliminating temporary `install.sh` artifacts from
+  intermediate layers (#10, #13).
+- Fixed `test.sh` EXIT trap quoting (ShellCheck SC2064) and double-quoted variable
+  expansions (ShellCheck SC2086) (#11, #12).
+
+### Security
+- Upgraded Alpine base image packages during build (`apk upgrade --no-cache`) to
+  resolve CVE-2026-14456 in `libcrypto3` and `libssl3` (#8, #15).
+
+### Changed
+- Replaced Beads issue tracking with GitHub Issues and added agent skills
+  configuration documentation in `docs/agents/` (#16).
 
 ## [1.0.0] - 2026-09-06
 
@@ -37,4 +61,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added non-root user `USER beanstalk` to run the daemon with unprivileged permissions.
 - Removed deprecated `MAINTAINER` instruction from `Dockerfile`.
 
+[1.0.1]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/jonbaldie/beanstalkd/releases/tag/v1.0.0
