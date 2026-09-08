@@ -3,6 +3,13 @@ set -e
 
 IMAGE="${1:-jonbaldie/beanstalkd:latest}"
 
+for dep in docker python3; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+        echo "FAIL: '$dep' is required by test.sh but was not found in PATH."
+        exit 1
+    fi
+done
+
 echo "Starting beanstalkd container from image: $IMAGE"
 CONTAINER_ID=$(docker run -d -p 11300:11300 "$IMAGE")
 
