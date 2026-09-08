@@ -30,7 +30,7 @@ if ! grep -Fq "FAIL: 'python3' is required by test.sh but was not found in PATH.
 fi
 
 if grep -Fq "Starting beanstalkd container" "$OUTPUT_FILE" ||
-   grep -Fq "beanstalkd did not respond on port 11300" "$OUTPUT_FILE"; then
+   grep -Fq "beanstalkd did not respond on port" "$OUTPUT_FILE"; then
     echo "FAIL: test.sh started the daemon or reported a daemon response failure."
     cat "$OUTPUT_FILE"
     exit 1
