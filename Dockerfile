@@ -1,6 +1,6 @@
 FROM alpine
 
-RUN apk add --no-cache beanstalkd
+RUN apk add --no-cache beanstalkd && apk upgrade --no-cache
 
 USER beanstalk
 
