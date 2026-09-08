@@ -4,4 +4,5 @@ build:
 test: build
 	./test_test.sh
 	./test_cleanup.sh
+	./test_busy_port.sh
 	./test.sh

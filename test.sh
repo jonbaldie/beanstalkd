@@ -28,14 +28,23 @@ cleanup() {
 }
 
 trap cleanup EXIT
-docker run -d --name "$CONTAINER_NAME" -p 11300:11300 "$IMAGE" > /dev/null
+docker run -d --name "$CONTAINER_NAME" -p 127.0.0.1:0:11300 "$IMAGE" > /dev/null
+PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$CONTAINER_NAME")
+if [ -z "$PORT" ] || [ "$PORT" = "<no value>" ]; then
+    echo "FAIL: could not determine the mapped host port for $CONTAINER_NAME."
+    echo "Container logs:"
+    docker logs "$CONTAINER_NAME"
+    exit 1
+fi
 
-# ---- Test 1: beanstalkd responds to the stats command on port 11300 ----
+# ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
 #
 # NOTE: nc -z is intentionally avoided here because Docker's userland proxy
-# completes the TCP handshake on host:11300 before the container-side port
-# is even open, giving a false positive. We instead send an actual beanstalkd
-# command and require an "OK" response, which proves the daemon is running.
+# completes the TCP handshake on the mapped host port before the container-side
+# port is even open, giving a false positive. We instead send an actual
+# beanstalkd command and require an "OK" response, which proves the daemon is
+# running. Host port 11300 is not required; a random mapping lets this run
+# when that port is already allocated (issue #25).
 
 beanstalkd_ok() {
     port="$1"
@@ -76,12 +85,12 @@ except Exception:
 
 MAX_RETRIES=15
 RETRY_COUNT=0
-echo "Waiting for beanstalkd to respond on port 11300..."
+echo "Waiting for beanstalkd to respond on port $PORT..."
 
-while ! beanstalkd_ok 11300; do
+while ! beanstalkd_ok "$PORT"; do
     RETRY_COUNT=$((RETRY_COUNT+1))
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-        echo "FAIL: beanstalkd did not respond on port 11300 within $MAX_RETRIES seconds."
+        echo "FAIL: beanstalkd did not respond on port $PORT within $MAX_RETRIES seconds."
         echo "Container logs:"
         docker logs "$CONTAINER_NAME"
         exit 1
@@ -89,7 +98,7 @@ while ! beanstalkd_ok 11300; do
     sleep 1
 done
 
-echo "PASS: beanstalkd is responding on port 11300."
+echo "PASS: beanstalkd is responding on port $PORT."
 
 # ---- Test 2: Process runs as non-root user ----
 #

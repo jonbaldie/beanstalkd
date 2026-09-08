@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `test.sh` maps a random localhost port instead of host :11300, so `make test`
+  no longer fails with docker exit 125 when that port is already allocated (#25).
 - Removed `VOLUME ["/data"]` from the image: a default (non-persistent) run
   attached an unused anonymous volume to `/data`, and `docker rm -f` never
   deletes anonymous volumes, so they accumulated on the host (#24). Named-volume
