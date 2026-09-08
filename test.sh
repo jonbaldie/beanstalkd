@@ -11,25 +11,19 @@ for dep in docker python3; do
 done
 
 echo "Starting beanstalkd container from image: $IMAGE"
-CONTAINER_ID=""
-PERSISTENCE_CONTAINER_ID=""
-PERSISTENCE_VOLUME=""
+CONTAINER_NAME="beanstalkd-test-$$"
+PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$$"
+PERSISTENCE_VOLUME="beanstalkd-persistence-test-$$"
 
 cleanup() {
     echo "Tearing down containers..."
-    if [ -n "$CONTAINER_ID" ]; then
-        docker rm -f "$CONTAINER_ID" > /dev/null 2>&1 || true
-    fi
-    if [ -n "$PERSISTENCE_CONTAINER_ID" ]; then
-        docker rm -f "$PERSISTENCE_CONTAINER_ID" > /dev/null 2>&1 || true
-    fi
-    if [ -n "$PERSISTENCE_VOLUME" ]; then
-        docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
-    fi
+    docker rm -f "$CONTAINER_NAME" > /dev/null 2>&1 || true
+    docker rm -f "$PERSISTENCE_CONTAINER_NAME" > /dev/null 2>&1 || true
+    docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
 }
 
 trap cleanup EXIT
-CONTAINER_ID=$(docker run -d -p 11300:11300 "$IMAGE")
+docker run -d --name "$CONTAINER_NAME" -p 11300:11300 "$IMAGE" > /dev/null
 
 # ---- Test 1: beanstalkd responds to the stats command on port 11300 ----
 #
@@ -84,7 +78,7 @@ while ! beanstalkd_ok 11300; do
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
         echo "FAIL: beanstalkd did not respond on port 11300 within $MAX_RETRIES seconds."
         echo "Container logs:"
-        docker logs "$CONTAINER_ID"
+        docker logs "$CONTAINER_NAME"
         exit 1
     fi
     sleep 1
@@ -100,7 +94,7 @@ echo "PASS: beanstalkd is responding on port 11300."
 # that the beanstalkd process itself is executing under an unprivileged user.
 
 echo "Checking process user..."
-RUNNING_USER=$(docker exec "$CONTAINER_ID" ps -o user,comm | awk '$2 ~ /beanstalkd/ {print $1; exit}')
+RUNNING_USER=$(docker exec "$CONTAINER_NAME" ps -o user,comm | awk '$2 ~ /beanstalkd/ {print $1; exit}')
 if [ -z "$RUNNING_USER" ]; then
     echo "FAIL: unable to determine beanstalkd process user."
     exit 1
@@ -113,7 +107,7 @@ echo "PASS: beanstalkd is running as non-root user '$RUNNING_USER'."
 
 # ---- Test 3: Install script not present in filesystem or image layers ----
 echo "Checking for install script artifact..."
-if docker exec "$CONTAINER_ID" test -f /install.sh 2>/dev/null; then
+if docker exec "$CONTAINER_NAME" test -f /install.sh 2>/dev/null; then
     echo "FAIL: install.sh was not cleaned up and is present inside the image."
     exit 1
 fi
@@ -167,16 +161,16 @@ echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
 # directory so an unprivileged daemon can write its WAL there.
 
 echo "Checking persistence on a Docker-managed named volume..."
-PERSISTENCE_VOLUME=$(docker volume create "beanstalkd-persistence-test-$$")
-PERSISTENCE_CONTAINER_ID=$(docker run -d -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data)
-PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_ID")
+docker volume create "$PERSISTENCE_VOLUME" > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: persistent beanstalkd container exited before it became ready."
     echo "Container logs:"
-    docker logs "$PERSISTENCE_CONTAINER_ID"
+    docker logs "$PERSISTENCE_CONTAINER_NAME"
     exit 1
 fi
-PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_ID")
+PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
 
 put_persistent_job() {
     python3 - "$1" <<'PY'
@@ -212,7 +206,7 @@ while ! put_persistent_job "$PERSISTENCE_PORT"; do
     if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
         echo "FAIL: persistent beanstalkd did not accept a job on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
         echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_ID"
+        docker logs "$PERSISTENCE_CONTAINER_NAME"
         exit 1
     fi
     sleep 1
@@ -222,18 +216,17 @@ done
 sleep 1
 
 echo "Restarting persistent beanstalkd container..."
-docker stop -t 15 "$PERSISTENCE_CONTAINER_ID" > /dev/null
-docker rm "$PERSISTENCE_CONTAINER_ID" > /dev/null
-PERSISTENCE_CONTAINER_ID=""
-PERSISTENCE_CONTAINER_ID=$(docker run -d -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data)
-PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_ID")
+docker stop -t 15 "$PERSISTENCE_CONTAINER_NAME" > /dev/null
+docker rm "$PERSISTENCE_CONTAINER_NAME" > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: restarted persistent beanstalkd container exited before it became ready."
     echo "Container logs:"
-    docker logs "$PERSISTENCE_CONTAINER_ID"
+    docker logs "$PERSISTENCE_CONTAINER_NAME"
     exit 1
 fi
-PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_ID")
+PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
 
 reserve_persistent_job() {
     python3 - "$1" <<'PY'
@@ -296,14 +289,14 @@ while :; do
     if [ "$RESERVE_RC" -ne 1 ]; then
         echo "FAIL: restarted persistent beanstalkd did not recover the persisted job."
         echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_ID"
+        docker logs "$PERSISTENCE_CONTAINER_NAME"
         exit 1
     fi
     PERSISTENCE_RETRY_COUNT=$((PERSISTENCE_RETRY_COUNT+1))
     if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
         echo "FAIL: restarted persistent beanstalkd did not accept a connection on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
         echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_ID"
+        docker logs "$PERSISTENCE_CONTAINER_NAME"
         exit 1
     fi
     sleep 1
