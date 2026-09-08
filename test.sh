@@ -7,7 +7,7 @@ echo "Starting beanstalkd container from image: $IMAGE"
 CONTAINER_ID=$(docker run -d -p 11300:11300 "$IMAGE")
 
 # Ensure the container is destroyed when the script exits
-trap "echo 'Tearing down container...'; docker rm -f $CONTAINER_ID > /dev/null" EXIT
+trap 'echo "Tearing down container..."; [ -n "$CONTAINER_ID" ] && docker rm -f "$CONTAINER_ID" > /dev/null 2>&1 || true' EXIT
 
 # ---- Test 1: beanstalkd responds to the stats command on port 11300 ----
 #
@@ -39,7 +39,7 @@ while ! beanstalkd_ok; do
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
         echo "FAIL: beanstalkd did not respond on port 11300 within $MAX_RETRIES seconds."
         echo "Container logs:"
-        docker logs $CONTAINER_ID
+        docker logs "$CONTAINER_ID"
         exit 1
     fi
     sleep 1
