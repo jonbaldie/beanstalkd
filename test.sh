@@ -56,13 +56,17 @@ if [ "$RUNNING_USER" = "root" ]; then
 fi
 echo "PASS: beanstalkd is running as non-root user '$RUNNING_USER'."
 
-# ---- Test 3: Install script cleaned up from image ----
+# ---- Test 3: Install script not present in filesystem or image layers ----
 echo "Checking for install script artifact..."
 if docker exec "$CONTAINER_ID" test -f /install.sh 2>/dev/null; then
     echo "FAIL: install.sh was not cleaned up and is present inside the image."
     exit 1
 fi
-echo "PASS: install.sh is not present in the image."
+if docker history --no-trunc "$IMAGE" | grep -q "install\.sh"; then
+    echo "FAIL: install.sh persists in image layer history."
+    exit 1
+fi
+echo "PASS: install.sh is not present in image filesystem or layer history."
 
 # ---- Test 4: EXPOSE metadata declares port 11300 ----
 #
