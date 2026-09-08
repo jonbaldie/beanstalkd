@@ -48,9 +48,19 @@ done
 echo "PASS: beanstalkd is responding on port 11300."
 
 # ---- Test 2: Process runs as non-root user ----
+#
+# NOTE: `docker exec whoami` is intentionally avoided because it spawns a new
+# transient process using the image's default USER rather than inspecting the
+# running daemon. We query the process table inside the container to verify
+# that the beanstalkd process itself is executing under an unprivileged user.
+
 echo "Checking process user..."
-RUNNING_USER=$(docker exec "$CONTAINER_ID" whoami)
-if [ "$RUNNING_USER" = "root" ]; then
+RUNNING_USER=$(docker exec "$CONTAINER_ID" ps -o user,comm | awk '$2 ~ /beanstalkd/ {print $1; exit}')
+if [ -z "$RUNNING_USER" ]; then
+    echo "FAIL: unable to determine beanstalkd process user."
+    exit 1
+fi
+if [ "$RUNNING_USER" = "root" ] || [ "$RUNNING_USER" = "0" ]; then
     echo "FAIL: beanstalkd is running as root (got: $RUNNING_USER)"
     exit 1
 fi
