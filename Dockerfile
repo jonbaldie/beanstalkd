@@ -5,7 +5,11 @@ RUN apk add --no-cache beanstalkd \
     && mkdir -p /data \
     && chown beanstalk:daemon /data
 
-VOLUME ["/data"]
+# No VOLUME here: a VOLUME would attach an unused anonymous volume to every
+# default run, and `docker rm -f` never deletes anonymous volumes (issue #24).
+# The beanstalk-owned /data directory is enough for
+# `docker run -v vol:/data ... beanstalkd -b /data` to persist its WAL.
+
 USER beanstalk
 
 EXPOSE 11300
