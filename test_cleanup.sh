@@ -3,8 +3,8 @@ set -eu
 
 # Regression for issue #17: when `docker run` creates a container then fails
 # with empty stdout (exit 125), test.sh must still remove that container.
-# Regression for issue #23: cleanup must also remove the anonymous /data
-# volume Docker attaches because the image declares VOLUME ["/data"].
+# Regression for issue #23: cleanup must also remove any volumes Docker
+# attaches to the created containers (e.g. an anonymous /data volume).
 
 IMAGE="${1:-jonbaldie/beanstalkd:latest}"
 REAL_DOCKER=$(command -v docker)

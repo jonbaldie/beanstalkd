@@ -14,12 +14,17 @@ echo "Starting beanstalkd container from image: $IMAGE"
 CONTAINER_NAME="beanstalkd-test-$$"
 PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$$"
 PERSISTENCE_VOLUME="beanstalkd-persistence-test-$$"
+VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$$"
+BEFORE_VOLUMES=$(mktemp)
+AFTER_VOLUMES=$(mktemp)
 
 cleanup() {
     echo "Tearing down containers..."
     docker rm -fv "$CONTAINER_NAME" > /dev/null 2>&1 || true
     docker rm -fv "$PERSISTENCE_CONTAINER_NAME" > /dev/null 2>&1 || true
     docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
+    docker rm -fv "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null 2>&1 || true
+    rm -f "$BEFORE_VOLUMES" "$AFTER_VOLUMES" 2>/dev/null || true
 }
 
 trap cleanup EXIT
@@ -303,3 +308,35 @@ while :; do
 done
 
 echo "PASS: job survived a container restart on a Docker-managed named volume."
+
+# ---- Test 7: default run leaves no anonymous volume behind ----
+#
+# Regression for issue #24: `VOLUME ["/data"]` attaches an anonymous volume to
+# every container that does not explicitly mount /data, and the default CMD
+# (no -b) never writes to it. `docker rm -f` does not delete anonymous volumes,
+# so a plain `docker run -d` / `docker rm -f` cycle leaked storage on the host.
+# A default run must attach no volume at all and leave nothing behind.
+
+echo "Checking default run attaches no anonymous volume..."
+
+docker volume ls -q | sort > "$BEFORE_VOLUMES"
+docker run -d --name "$VOLUME_LEAK_CONTAINER_NAME" "$IMAGE" > /dev/null
+DATA_MOUNT=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
+if [ "$DATA_MOUNT" = "volume" ]; then
+    echo "FAIL: a default run attaches an anonymous volume to /data."
+    docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
+    exit 1
+fi
+docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
+
+docker volume ls -q | sort > "$AFTER_VOLUMES"
+if ! diff -q "$BEFORE_VOLUMES" "$AFTER_VOLUMES" > /dev/null; then
+    echo "FAIL: docker rm -f of a default container left volume(s) behind:"
+    diff "$BEFORE_VOLUMES" "$AFTER_VOLUMES" | grep '^>' | while read -r _ vol; do
+        [ -n "$vol" ] || continue
+        docker volume rm -f "$vol" > /dev/null 2>&1 || true
+    done
+    exit 1
+fi
+
+echo "PASS: default run attaches no volume and docker rm -f leaves none behind."

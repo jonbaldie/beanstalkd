@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Removed `VOLUME ["/data"]` from the image: a default (non-persistent) run
+  attached an unused anonymous volume to `/data`, and `docker rm -f` never
+  deletes anonymous volumes, so they accumulated on the host (#24). Named-volume
+  persistence (`docker run -v vol:/data ... beanstalkd -b /data`) is unchanged;
+  the beanstalk-owned `/data` directory in the image is what makes it work.
+
 ## [1.0.0] - 2026-09-06
 
 ### Added
