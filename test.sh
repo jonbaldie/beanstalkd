@@ -11,10 +11,25 @@ for dep in docker python3; do
 done
 
 echo "Starting beanstalkd container from image: $IMAGE"
-CONTAINER_ID=$(docker run -d -p 11300:11300 "$IMAGE")
+CONTAINER_ID=""
+PERSISTENCE_CONTAINER_ID=""
+PERSISTENCE_VOLUME=""
 
-# Ensure the container is destroyed when the script exits
-trap 'echo "Tearing down container..."; [ -n "$CONTAINER_ID" ] && docker rm -f "$CONTAINER_ID" > /dev/null 2>&1 || true' EXIT
+cleanup() {
+    echo "Tearing down containers..."
+    if [ -n "$CONTAINER_ID" ]; then
+        docker rm -f "$CONTAINER_ID" > /dev/null 2>&1 || true
+    fi
+    if [ -n "$PERSISTENCE_CONTAINER_ID" ]; then
+        docker rm -f "$PERSISTENCE_CONTAINER_ID" > /dev/null 2>&1 || true
+    fi
+    if [ -n "$PERSISTENCE_VOLUME" ]; then
+        docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
+    fi
+}
+
+trap cleanup EXIT
+CONTAINER_ID=$(docker run -d -p 11300:11300 "$IMAGE")
 
 # ---- Test 1: beanstalkd responds to the stats command on port 11300 ----
 #
@@ -24,24 +39,47 @@ trap 'echo "Tearing down container..."; [ -n "$CONTAINER_ID" ] && docker rm -f "
 # command and require an "OK" response, which proves the daemon is running.
 
 beanstalkd_ok() {
+    port="$1"
     python3 -c "
 import socket, sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b'\\r\\n'):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError('connection closed before response line')
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError('connection closed before response body')
+        response.extend(chunk)
+
 try:
-    s = socket.create_connection(('localhost', 11300), timeout=1)
+    s = socket.create_connection(('localhost', int(sys.argv[1])), timeout=1)
     s.sendall(b'stats\r\n')
-    d = s.recv(256)
+    d = read_line(s)
+    if not d.startswith(b'OK '):
+        raise RuntimeError('unexpected stats response')
+    read_bytes(s, int(d.split()[1]) + 2)
+    s.sendall(b'quit\r\n')
     s.close()
-    sys.exit(0 if d.startswith(b'OK') else 1)
+    sys.exit(0)
 except Exception:
     sys.exit(1)
-" 2>/dev/null
+" "$port" 2>/dev/null
 }
 
 MAX_RETRIES=15
 RETRY_COUNT=0
 echo "Waiting for beanstalkd to respond on port 11300..."
 
-while ! beanstalkd_ok; do
+while ! beanstalkd_ok 11300; do
     RETRY_COUNT=$((RETRY_COUNT+1))
     if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
         echo "FAIL: beanstalkd did not respond on port 11300 within $MAX_RETRIES seconds."
@@ -121,3 +159,154 @@ if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
 fi
 IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
 echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
+
+# ---- Test 6: Persistence works on a Docker-managed named volume ----
+#
+# Docker creates a new named volume as root-owned when the image does not
+# provide the mount point. The image must provide a beanstalk-owned /data
+# directory so an unprivileged daemon can write its WAL there.
+
+echo "Checking persistence on a Docker-managed named volume..."
+PERSISTENCE_VOLUME=$(docker volume create "beanstalkd-persistence-test-$$")
+PERSISTENCE_CONTAINER_ID=$(docker run -d -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data)
+PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_ID")
+if [ "$PERSISTENCE_RUNNING" != true ]; then
+    echo "FAIL: persistent beanstalkd container exited before it became ready."
+    echo "Container logs:"
+    docker logs "$PERSISTENCE_CONTAINER_ID"
+    exit 1
+fi
+PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_ID")
+
+put_persistent_job() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a response")
+        response.extend(chunk)
+    return bytes(response)
+
+try:
+    with socket.create_connection(("localhost", int(sys.argv[1])), timeout=1) as sock:
+        sock.settimeout(5)
+        sock.sendall(b"put 0 0 60 7\r\npersist\r\n")
+        response = read_line(sock)
+        if not response.startswith(b"INSERTED "):
+            print("expected INSERTED response, got %r" % response, file=sys.stderr)
+            raise SystemExit(2)
+except OSError:
+    raise SystemExit(1)
+PY
+}
+
+PERSISTENCE_RETRY_COUNT=0
+echo "Waiting for persistent beanstalkd to accept a job on port $PERSISTENCE_PORT..."
+while ! put_persistent_job "$PERSISTENCE_PORT"; do
+    PERSISTENCE_RETRY_COUNT=$((PERSISTENCE_RETRY_COUNT+1))
+    if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+        echo "FAIL: persistent beanstalkd did not accept a job on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
+        echo "Container logs:"
+        docker logs "$PERSISTENCE_CONTAINER_ID"
+        exit 1
+    fi
+    sleep 1
+done
+
+# Allow beanstalkd's default WAL fsync interval to complete before stopping it.
+sleep 1
+
+echo "Restarting persistent beanstalkd container..."
+docker stop -t 15 "$PERSISTENCE_CONTAINER_ID" > /dev/null
+docker rm "$PERSISTENCE_CONTAINER_ID" > /dev/null
+PERSISTENCE_CONTAINER_ID=""
+PERSISTENCE_CONTAINER_ID=$(docker run -d -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data)
+PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_ID")
+if [ "$PERSISTENCE_RUNNING" != true ]; then
+    echo "FAIL: restarted persistent beanstalkd container exited before it became ready."
+    echo "Container logs:"
+    docker logs "$PERSISTENCE_CONTAINER_ID"
+    exit 1
+fi
+PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_ID")
+
+reserve_persistent_job() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+try:
+    sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=1)
+except OSError:
+    raise SystemExit(1)
+
+with sock:
+    sock.settimeout(5)
+    sock.sendall(b"reserve-with-timeout 2\r\n")
+    response = read_line(sock)
+    if response.startswith(b"TIMED_OUT"):
+        print("expected RESERVED response, got %r" % response, file=sys.stderr)
+        raise SystemExit(2)
+    if not response.startswith(b"RESERVED "):
+        print("expected RESERVED response, got %r" % response, file=sys.stderr)
+        raise SystemExit(2)
+    job_id, body_size = response.split()[1:3]
+    body = read_bytes(sock, int(body_size) + 2)
+    if body != b"persist\r\n":
+        print("expected persisted job body, got %r" % body, file=sys.stderr)
+        raise SystemExit(2)
+    sock.sendall(b"delete " + job_id + b"\r\n")
+    response = read_line(sock)
+    if response != b"DELETED\r\n":
+        print("expected DELETED response, got %r" % response, file=sys.stderr)
+        raise SystemExit(2)
+PY
+}
+
+PERSISTENCE_RETRY_COUNT=0
+while :; do
+    if reserve_persistent_job "$PERSISTENCE_PORT"; then
+        break
+    else
+        RESERVE_RC=$?
+    fi
+    if [ "$RESERVE_RC" -ne 1 ]; then
+        echo "FAIL: restarted persistent beanstalkd did not recover the persisted job."
+        echo "Container logs:"
+        docker logs "$PERSISTENCE_CONTAINER_ID"
+        exit 1
+    fi
+    PERSISTENCE_RETRY_COUNT=$((PERSISTENCE_RETRY_COUNT+1))
+    if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
+        echo "FAIL: restarted persistent beanstalkd did not accept a connection on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
+        echo "Container logs:"
+        docker logs "$PERSISTENCE_CONTAINER_ID"
+        exit 1
+    fi
+    sleep 1
+done
+
+echo "PASS: job survived a container restart on a Docker-managed named volume."
