@@ -15,8 +15,22 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-if docker run -d --name "$OCCUPIER_NAME" -p 11300:11300 "$IMAGE" >/dev/null 2>"$OCCUPIER_ERR"; then
-    :
+assert_loopback_port() {
+    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$OCCUPIER_NAME")
+    if [ -z "$host_ips" ]; then
+        echo "FAIL: $OCCUPIER_NAME did not publish port 11300."
+        exit 1
+    fi
+    for host_ip in $host_ips; do
+        if [ "$host_ip" != "127.0.0.1" ]; then
+            echo "FAIL: $OCCUPIER_NAME published port 11300 on $host_ip instead of loopback."
+            exit 1
+        fi
+    done
+}
+
+if docker run -d --name "$OCCUPIER_NAME" -p 127.0.0.1:11300:11300 "$IMAGE" >/dev/null 2>"$OCCUPIER_ERR"; then
+    assert_loopback_port
 elif grep -q "port is already allocated" "$OCCUPIER_ERR"; then
     docker rm -f "$OCCUPIER_NAME" >/dev/null 2>&1 || true
 else
