@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `test.sh` now names its Docker resources with a random per-run suffix and tags
+  them with an ownership label, and teardown removes only labelled resources.
+  Previously every name was derived from `$$` alone and cleanup force-removed
+  those names unconditionally, so a recycled PID let the suite adopt and then
+  destroy a container or volume a user already owned (#30).
+- `test.sh` refuses to reuse a pre-existing persistence volume instead of
+  silently adopting it, and now also cleans up on `HUP`/`INT`/`TERM` (#30).
+
 ## [1.0.1] - 2026-09-08
 
 ### Fixed
