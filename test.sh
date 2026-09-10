@@ -28,8 +28,6 @@ CONTAINER_NAME="beanstalkd-test-$RUN_ID"
 PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$RUN_ID"
 PERSISTENCE_VOLUME="beanstalkd-persistence-test-$RUN_ID"
 VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$RUN_ID"
-BEFORE_VOLUMES=$(mktemp)
-AFTER_VOLUMES=$(mktemp)
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -45,7 +43,6 @@ cleanup() {
     for owned in $OWNED_VOLUMES; do
         docker volume rm -f "$owned" > /dev/null 2>&1 || true
     done
-    rm -f "$BEFORE_VOLUMES" "$AFTER_VOLUMES" 2>/dev/null || true
 }
 
 trap cleanup EXIT
@@ -355,22 +352,17 @@ echo "PASS: job survived a container restart on a Docker-managed named volume."
 
 echo "Checking default run attaches no anonymous volume..."
 
-docker volume ls -q | sort > "$BEFORE_VOLUMES"
 docker run -d --name "$VOLUME_LEAK_CONTAINER_NAME" --label "$OWNER_LABEL" "$IMAGE" > /dev/null
-DATA_MOUNT=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
-if [ "$DATA_MOUNT" = "volume" ]; then
-    echo "FAIL: a default run attaches an anonymous volume to /data."
-    docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
-    exit 1
-fi
+ATTACHED_VOLUMES=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
 docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
 
-docker volume ls -q | sort > "$AFTER_VOLUMES"
-if ! diff -q "$BEFORE_VOLUMES" "$AFTER_VOLUMES" > /dev/null; then
-    echo "FAIL: docker rm -f of a default container left volume(s) behind:"
-    diff "$BEFORE_VOLUMES" "$AFTER_VOLUMES" | grep '^>' | while read -r _ vol; do
-        [ -n "$vol" ] || continue
-        docker volume rm -f "$vol" > /dev/null 2>&1 || true
+if [ -n "$ATTACHED_VOLUMES" ]; then
+    echo "FAIL: a default run attached anonymous volume(s):"
+    for volume in $ATTACHED_VOLUMES; do
+        if docker volume inspect "$volume" > /dev/null 2>&1; then
+            echo "FAIL: docker rm -f of a default container left volume $volume behind."
+            docker volume rm -f "$volume" > /dev/null 2>&1 || true
+        fi
     done
     exit 1
 fi
