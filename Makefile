@@ -5,4 +5,5 @@ test: build
 	./test_test.sh
 	./test_cleanup.sh
 	./test_busy_port.sh
+	./test_name_collision.sh
 	./test.sh

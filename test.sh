@@ -11,24 +11,47 @@ for dep in docker python3; do
 done
 
 echo "Starting beanstalkd container from image: $IMAGE"
-CONTAINER_NAME="beanstalkd-test-$$"
-PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$$"
-PERSISTENCE_VOLUME="beanstalkd-persistence-test-$$"
-VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$$"
+
+# Resource names must not be guessable from the PID alone (issue #30): PIDs are
+# recycled, so a user-owned container or volume could take the name this run
+# expects, get adopted by the test, and then be destroyed by cleanup. A random
+# suffix makes the names ours, and an ownership label scoped to that same
+# random id lets cleanup remove only what this invocation created.
+RUN_SUFFIX=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+if [ -z "$RUN_SUFFIX" ]; then
+    echo "FAIL: could not generate a random suffix for test resource names."
+    exit 1
+fi
+RUN_ID="$$-$RUN_SUFFIX"
+OWNER_LABEL="beanstalkd-test-run=$RUN_ID"
+CONTAINER_NAME="beanstalkd-test-$RUN_ID"
+PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$RUN_ID"
+PERSISTENCE_VOLUME="beanstalkd-persistence-test-$RUN_ID"
+VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$RUN_ID"
 BEFORE_VOLUMES=$(mktemp)
 AFTER_VOLUMES=$(mktemp)
 
+# Cleanup selects by the ownership label rather than by name, so it can never
+# remove a resource this invocation did not create. The label is applied at
+# creation time, which also covers containers that Docker created but failed to
+# start (issue #17), where no id is ever returned to us.
 cleanup() {
     echo "Tearing down containers..."
-    docker rm -fv "$CONTAINER_NAME" > /dev/null 2>&1 || true
-    docker rm -fv "$PERSISTENCE_CONTAINER_NAME" > /dev/null 2>&1 || true
-    docker volume rm -f "$PERSISTENCE_VOLUME" > /dev/null 2>&1 || true
-    docker rm -fv "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null 2>&1 || true
+    OWNED_CONTAINERS=$(docker ps -aq --filter "label=$OWNER_LABEL" 2>/dev/null || true)
+    for owned in $OWNED_CONTAINERS; do
+        docker rm -fv "$owned" > /dev/null 2>&1 || true
+    done
+    OWNED_VOLUMES=$(docker volume ls -q --filter "label=$OWNER_LABEL" 2>/dev/null || true)
+    for owned in $OWNED_VOLUMES; do
+        docker volume rm -f "$owned" > /dev/null 2>&1 || true
+    done
     rm -f "$BEFORE_VOLUMES" "$AFTER_VOLUMES" 2>/dev/null || true
 }
 
 trap cleanup EXIT
-docker run -d --name "$CONTAINER_NAME" -p 127.0.0.1:0:11300 "$IMAGE" > /dev/null
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+docker run -d --name "$CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 "$IMAGE" > /dev/null
 PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$CONTAINER_NAME")
 if [ -z "$PORT" ] || [ "$PORT" = "<no value>" ]; then
     echo "FAIL: could not determine the mapped host port for $CONTAINER_NAME."
@@ -175,8 +198,12 @@ echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
 # directory so an unprivileged daemon can write its WAL there.
 
 echo "Checking persistence on a Docker-managed named volume..."
-docker volume create "$PERSISTENCE_VOLUME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+if docker volume inspect "$PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$PERSISTENCE_VOLUME" > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
 PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: persistent beanstalkd container exited before it became ready."
@@ -232,7 +259,7 @@ sleep 1
 echo "Restarting persistent beanstalkd container..."
 docker stop -t 15 "$PERSISTENCE_CONTAINER_NAME" > /dev/null
 docker rm "$PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
 PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: restarted persistent beanstalkd container exited before it became ready."
@@ -329,7 +356,7 @@ echo "PASS: job survived a container restart on a Docker-managed named volume."
 echo "Checking default run attaches no anonymous volume..."
 
 docker volume ls -q | sort > "$BEFORE_VOLUMES"
-docker run -d --name "$VOLUME_LEAK_CONTAINER_NAME" "$IMAGE" > /dev/null
+docker run -d --name "$VOLUME_LEAK_CONTAINER_NAME" --label "$OWNER_LABEL" "$IMAGE" > /dev/null
 DATA_MOUNT=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Type}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
 if [ "$DATA_MOUNT" = "volume" ]; then
     echo "FAIL: a default run attaches an anonymous volume to /data."
