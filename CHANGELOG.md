@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Malformed `kick` bounds are now rejected with `BAD_FORMAT` instead of
+  mutating the buried queue: `kick 1garbage` (trailing garbage) and `kick -1`
+  (negative bound) previously returned `KICKED n` and kicked every buried job
+  to ready (#36). The Alpine package's daemon (1.13) still has this bug, so the
+  image now builds the daemon from pinned upstream `v1.13` source plus
+  `patches/kick-bound.patch`, which validates the bound with the daemon's own
+  `read_u32()`; the patched binary replaces the package binary and everything
+  else about the package is unchanged.
+- `test.sh` now asserts both the response and the queue state for malformed
+  and valid `kick` bounds, so a future parser regression cannot pass by
+  checking response text alone (#36).
 - `test.sh` and `test_busy_port.sh` now bind all test-only beanstalkd port
   mappings to `127.0.0.1`, preventing temporary queues from being reachable on
   other host interfaces (#32).
