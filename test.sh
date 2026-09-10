@@ -204,7 +204,141 @@ fi
 IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
 echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
 
-# ---- Test 6: Persistence works on a Docker-managed named volume ----
+# ---- Test 6: malformed kick bounds are rejected and leave the queue unmutated ----
+#
+# Regression for issue #36: the packaged daemon parsed the `kick` bound with a
+# bare strtoul(), so trailing garbage was silently ignored and a negative bound
+# wrapped to a huge unsigned count. In both cases the reply was `KICKED n` and
+# every buried job was kicked to ready. Per the protocol (doc/protocol.txt),
+# integers are non-negative and malformed commands must yield BAD_FORMAT, with
+# no queue mutation. The assertion covers queue state, not just response text,
+# so a future regression that only corrupts the response cannot pass here.
+#
+# Regression for issue #36: the packaged daemon parsed the `kick` bound with a
+# bare strtoul(), so trailing garbage was silently ignored and a negative bound
+# wrapped to a huge unsigned count. In both cases the reply was `KICKED n` and
+# every buried job was kicked to ready. Per the protocol (doc/protocol.txt),
+# integers are non-negative and malformed commands must yield BAD_FORMAT, with
+# no queue mutation. The assertion covers queue state, not just response text,
+# so a future regression that only corrupts the response cannot pass here.
+
+check_kick_bounds() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete body")
+        response.extend(chunk)
+    return bytes(response)
+
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+def stats(sock):
+    sock.sendall(b"stats\r\n")
+    r = read_line(sock)
+    if not r.startswith(b"OK "):
+        return None
+    body = read_bytes(sock, int(r.split()[1]) + 2)
+    out = {}
+    for line in body.split(b"\n"):
+        line = line.strip()
+        if b": " in line:
+            k, v = line.split(b": ", 1)
+            out[k] = v
+    return out
+
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+
+def cmd(line, body=None):
+    sock.sendall(line)
+    if body is not None:
+        sock.sendall(body)
+    return read_line(sock)
+
+TUBE = b"kick-regression"
+sock.sendall(b"use " + TUBE + b"\r\n"); read_line(sock)
+sock.sendall(b"watch " + TUBE + b"\r\n"); read_line(sock)
+sock.sendall(b"ignore default\r\n"); read_line(sock)
+
+# --- malformed bound: trailing garbage must be rejected and must not kick ---
+r = cmd(b"put 1 0 60 8\r\n", b"buried-a\r\n")
+job_id = r.split()[1]
+r = cmd(b"reserve-with-timeout 0\r\n")
+read_bytes(sock, int(r.split()[2]) + 2)  # RESERVED body
+if cmd(b"bury " + job_id + b" 1\r\n") != b"BURIED\r\n":
+    failures.append("setup: bury of first job failed")
+
+if cmd(b"kick 1garbage\r\n") != b"BAD_FORMAT\r\n":
+    failures.append("kick 1garbage: expected BAD_FORMAT")
+r = cmd(b"peek-ready\r\n")
+if r.startswith(b"FOUND"):
+    read_bytes(sock, int(r.split()[2]) + 2)  # drain FOUND body before continuing
+if not r.startswith(b"NOT_FOUND"):
+    failures.append("kick 1garbage mutated queue: a ready job appeared (got %r)" % r)
+# Remove the residue so later counts are exact; buried jobs may be deleted.
+if cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
+    failures.append("kick 1garbage: job could not be cleaned up")
+
+# --- malformed bound: negative value must be rejected and must not kick ---
+buried_ids = []
+for body in (b"buried-b\r\n", b"buried-c\r\n"):
+    r = cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
+    job_id = r.split()[1]
+    r = cmd(b"reserve-with-timeout 0\r\n")
+    read_bytes(sock, int(r.split()[2]) + 2)  # RESERVED body
+    cmd(b"bury " + job_id + b" 1\r\n")
+    buried_ids.append(job_id)
+
+if cmd(b"kick -1\r\n") != b"BAD_FORMAT\r\n":
+    failures.append("kick -1: expected BAD_FORMAT")
+s = stats(sock)
+if s is None or s.get(b"current-jobs-ready") != b"0" or s.get(b"current-jobs-buried") != b"2":
+    failures.append("kick -1 mutated queue: %r (expected ready=0, buried=2)" % s)
+
+# --- valid non-negative bounds must keep their semantics ---
+if cmd(b"kick 1\r\n") != b"KICKED 1\r\n":
+    failures.append("valid kick 1: expected KICKED 1")
+r = cmd(b"peek-ready\r\n")
+if not r.startswith(b"FOUND "):
+    failures.append("valid kick 1: no ready job after kick (got %r)" % r)
+else:
+    body = read_bytes(sock, int(r.split()[2]) + 2)
+    if body != b"buried-b\r\n":
+        failures.append("valid kick 1: wrong job kicked (body %r)" % body)
+
+sock.close()
+
+if failures:
+    for f in failures:
+        print("kick regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking malformed kick bounds are rejected and leave the queue unmutated..."
+check_kick_bounds "$PORT"
+echo "PASS: malformed kick bounds return BAD_FORMAT and the queue is unmutated."
+
+# ---- Test 7: Persistence works on a Docker-managed named volume ----
 #
 # Docker creates a new named volume as root-owned when the image does not
 # provide the mount point. The image must provide a beanstalk-owned /data
@@ -360,7 +494,7 @@ done
 
 echo "PASS: job survived a container restart on a Docker-managed named volume."
 
-# ---- Test 7: default run leaves no anonymous volume behind ----
+# ---- Test 8: default run leaves no anonymous volume behind ----
 #
 # Regression for issue #24: `VOLUME ["/data"]` attaches an anonymous volume to
 # every container that does not explicitly mount /data, and the default CMD

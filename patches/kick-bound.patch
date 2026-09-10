@@ -1,0 +1,36 @@
+Fix kick bound parsing (issue #36; upstream bug, unfixed as of v1.13).
+
+dispatch_cmd() parsed the `kick` bound with a bare strtoul(): the end
+pointer was never checked, so trailing garbage (`kick 1garbage`) was
+silently ignored, and a negative bound (`kick -1`) wrapped to a huge
+unsigned count. Both returned `KICKED n` and kicked the whole buried
+queue instead of replying BAD_FORMAT. The protocol specifies the kick
+bound as a non-negative integer and requires malformed commands to
+fail with BAD_FORMAT without mutating the queue.
+
+Route the bound through read_u32(), the daemon's own validator used by
+the other integer arguments: it rejects a leading minus, requires the
+argument to be fully consumed, and range-checks against UINT32_MAX.
+
+--- a/prot.c
++++ b/prot.c
+@@ -1288,7 +1288,7 @@
+ {
+     int r, timeout = -1;
+     uint i;
+-    uint count;
++    uint32 count;
+     Job *j = 0;
+     byte type;
+     char *size_buf, *delay_buf, *ttr_buf, *pri_buf, *end_buf, *name;
+@@ -1614,9 +1614,7 @@
+         return;
+ 
+     case OP_KICK:
+-        errno = 0;
+-        count = strtoul(c->cmd + CMD_KICK_LEN, &end_buf, 10);
+-        if (end_buf == c->cmd + CMD_KICK_LEN || errno) {
++        if (read_u32(&count, c->cmd + CMD_KICK_LEN, NULL)) {
+             reply_msg(c, MSG_BAD_FORMAT);
+             return;
+         }
