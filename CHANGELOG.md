@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `test.sh` now scopes the default-run volume regression check to mounts on its
+  own test container, so it no longer treats unrelated host volumes as leaks
+  or deletes them (#31).
 - `test.sh` now names its Docker resources with a random per-run suffix and tags
   them with an ownership label, and teardown removes only labelled resources.
   Previously every name was derived from `$$` alone and cleanup force-removed
