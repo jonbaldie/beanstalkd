@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `test.sh` and `test_busy_port.sh` now bind all test-only beanstalkd port
+  mappings to `127.0.0.1`, preventing temporary queues from being reachable on
+  other host interfaces (#32).
 - `test.sh` now scopes the default-run volume regression check to mounts on its
   own test container, so it no longer treats unrelated host volumes as leaks
   or deletes them (#31).

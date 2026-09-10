@@ -45,10 +45,26 @@ cleanup() {
     done
 }
 
+assert_loopback_port() {
+    container="$1"
+    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$container")
+    if [ -z "$host_ips" ]; then
+        echo "FAIL: $container did not publish port 11300."
+        exit 1
+    fi
+    for host_ip in $host_ips; do
+        if [ "$host_ip" != "127.0.0.1" ]; then
+            echo "FAIL: $container published port 11300 on $host_ip instead of loopback."
+            exit 1
+        fi
+    done
+}
+
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 docker run -d --name "$CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 "$IMAGE" > /dev/null
+assert_loopback_port "$CONTAINER_NAME"
 PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$CONTAINER_NAME")
 if [ -z "$PORT" ] || [ "$PORT" = "<no value>" ]; then
     echo "FAIL: could not determine the mapped host port for $CONTAINER_NAME."
@@ -200,7 +216,7 @@ if docker volume inspect "$PERSISTENCE_VOLUME" > /dev/null 2>&1; then
     exit 1
 fi
 docker volume create --label "$OWNER_LABEL" "$PERSISTENCE_VOLUME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
 PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: persistent beanstalkd container exited before it became ready."
@@ -208,6 +224,7 @@ if [ "$PERSISTENCE_RUNNING" != true ]; then
     docker logs "$PERSISTENCE_CONTAINER_NAME"
     exit 1
 fi
+assert_loopback_port "$PERSISTENCE_CONTAINER_NAME"
 PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
 
 put_persistent_job() {
@@ -256,7 +273,7 @@ sleep 1
 echo "Restarting persistent beanstalkd container..."
 docker stop -t 15 "$PERSISTENCE_CONTAINER_NAME" > /dev/null
 docker rm "$PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
+docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
 PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
 if [ "$PERSISTENCE_RUNNING" != true ]; then
     echo "FAIL: restarted persistent beanstalkd container exited before it became ready."
@@ -264,6 +281,7 @@ if [ "$PERSISTENCE_RUNNING" != true ]; then
     docker logs "$PERSISTENCE_CONTAINER_NAME"
     exit 1
 fi
+assert_loopback_port "$PERSISTENCE_CONTAINER_NAME"
 PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
 
 reserve_persistent_job() {
