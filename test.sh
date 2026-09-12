@@ -783,3 +783,118 @@ echo "Checking command lines splitting \\r\\n across buffer boundary do not hang
 check_split_buffer_boundary "$PORT"
 echo "PASS: command lines splitting \\r\\n across buffer boundary return BAD_FORMAT and preserve stream sync."
 
+# ---- Test 11: pause-tube commands without space delimiter are rejected ----
+#
+# Regression for issue #41: CMD_PAUSE_TUBE was defined as "pause-tube" without
+# a trailing space in prot.c, whereas all other commands taking arguments
+# include a trailing space in their macro definition. which_cmd() matched
+# "pause-tube" and read_tube_name() parsed the tube name immediately at the
+# offset CMD_PAUSE_TUBE_LEN, so commands lacking a space delimiter
+# (e.g. `pause-tubedefault 5\r\n`) paused the tube and replied PAUSED\r\n instead
+# of returning UNKNOWN_COMMAND\r\n.
+#
+# The test asserts:
+# 1. pause-tubedefault 5\r\n returns UNKNOWN_COMMAND\r\n and does not pause the tube
+#    or increment cmd-pause-tube.
+# 2. pause-tube\r\n returns UNKNOWN_COMMAND\r\n.
+# 3. Valid pause-tube default 5\r\n returns PAUSED\r\n, pauses the tube, and
+#    increments cmd-pause-tube.
+
+check_pause_tube_delimiter() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete body")
+        response.extend(chunk)
+    return bytes(response)
+
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+def stats_tube(sock, tube=b"default"):
+    sock.sendall(b"stats-tube " + tube + b"\r\n")
+    r = read_line(sock)
+    if not r.startswith(b"OK "):
+        return None
+    body = read_bytes(sock, int(r.split()[1]) + 2)
+    out = {}
+    for line in body.split(b"\n"):
+        line = line.strip()
+        if b": " in line:
+            k, v = line.split(b": ", 1)
+            out[k] = v
+    return out
+
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+
+def cmd(line):
+    sock.sendall(line)
+    return read_line(sock)
+
+# Check baseline tube stats before malformed command
+s_before = stats_tube(sock, b"default")
+if s_before is None:
+    failures.append("setup: stats-tube default failed")
+
+# Case 1: pause-tubedefault 5\r\n (missing space between command and argument)
+r = cmd(b"pause-tubedefault 5\r\n")
+check(r == b"UNKNOWN_COMMAND\r\n", "pause-tubedefault 5: expected UNKNOWN_COMMAND (got %r)" % r)
+
+s_after = stats_tube(sock, b"default")
+if s_before is not None and s_after is not None:
+    check(s_after.get(b"cmd-pause-tube") == s_before.get(b"cmd-pause-tube"),
+          "pause-tubedefault 5 incremented cmd-pause-tube: %r -> %r"
+          % (s_before.get(b"cmd-pause-tube"), s_after.get(b"cmd-pause-tube")))
+    check(s_after.get(b"pause") == b"0",
+          "pause-tubedefault 5 paused the tube: pause=%r" % s_after.get(b"pause"))
+
+# Case 2: pause-tube\r\n (no arguments, no space)
+r = cmd(b"pause-tube\r\n")
+check(r == b"UNKNOWN_COMMAND\r\n", "pause-tube: expected UNKNOWN_COMMAND (got %r)" % r)
+
+# Case 3: Valid pause-tube command must succeed and pause the tube
+r = cmd(b"pause-tube default 5\r\n")
+check(r == b"PAUSED\r\n", "valid pause-tube default 5: expected PAUSED (got %r)" % r)
+
+s_paused = stats_tube(sock, b"default")
+if s_after is not None and s_paused is not None:
+    expected_cmd_count = str(int(s_after.get(b"cmd-pause-tube", b"0")) + 1).encode()
+    check(s_paused.get(b"cmd-pause-tube") == expected_cmd_count,
+          "valid pause-tube: cmd-pause-tube was not incremented (expected %r, got %r)"
+          % (expected_cmd_count, s_paused.get(b"cmd-pause-tube")))
+    check(s_paused.get(b"pause") == b"5",
+          "valid pause-tube: pause was not set to 5 (got %r)" % s_paused.get(b"pause"))
+
+sock.close()
+
+if failures:
+    for f in failures:
+        print("pause-tube regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking pause-tube commands without space delimiter are rejected..."
+check_pause_tube_delimiter "$PORT"
+echo "PASS: pause-tube commands without space delimiter return UNKNOWN_COMMAND."
+
+
