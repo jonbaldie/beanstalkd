@@ -898,3 +898,86 @@ check_pause_tube_delimiter "$PORT"
 echo "PASS: pause-tube commands without space delimiter return UNKNOWN_COMMAND."
 
 
+# ---- Test 12: malformed quit prefixes are rejected ----
+#
+# Regression for issue #42: which_cmd() prefix-matches CMD_QUIT ("quit") and
+# the OP_QUIT dispatch case closed the connection without validating that the
+# command line is exactly "quit\r\n". Any command line beginning with "quit"
+# (e.g. `quitgarbage\r\n` or `quit foo\r\n`) silently closed the connection
+# with no response, instead of returning BAD_FORMAT\r\n.
+#
+# The test asserts:
+# 1. quitgarbage\r\n returns BAD_FORMAT\r\n (previously: connection closed).
+# 2. quit foo\r\n returns BAD_FORMAT\r\n (previously: connection closed).
+# 3. statsgarbage\r\n still returns BAD_FORMAT\r\n (control: same trailing-
+#    garbage guard as OP_STATS).
+# 4. A valid quit\r\n still closes the connection without a reply.
+
+check_quit_prefix() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            return None  # connection closed without a response
+        response.extend(chunk)
+    return bytes(response)
+
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+
+def cmd(line):
+    sock.sendall(line)
+    return read_line(sock)
+
+def close():
+    global sock
+    sock.close()
+
+# Case 1: quitgarbage\r\n (malformed quit prefix)
+r = cmd(b"quitgarbage\r\n")
+check(r == b"BAD_FORMAT\r\n", "quitgarbage: expected BAD_FORMAT, got %r" % r)
+close()
+
+# Case 2: quit foo\r\n (quit prefix with a trailing argument)
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+r = cmd(b"quit foo\r\n")
+check(r == b"BAD_FORMAT\r\n", "quit foo: expected BAD_FORMAT, got %r" % r)
+close()
+
+# Case 3: statsgarbage\r\n (control: OP_STATS trailing-garbage guard)
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+r = cmd(b"statsgarbage\r\n")
+check(r == b"BAD_FORMAT\r\n", "statsgarbage: expected BAD_FORMAT, got %r" % r)
+close()
+
+# Case 4: valid quit\r\n must still close the connection without a reply
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+sock.sendall(b"quit\r\n")
+closed = sock.recv(1) == b""
+sock.close()
+check(closed, "valid quit did not close the connection")
+
+if failures:
+    for f in failures:
+        print("quit-prefix regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking malformed quit prefixes are rejected..."
+check_quit_prefix "$PORT"
+echo "PASS: malformed quit prefixes return BAD_FORMAT."

@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Command lines beginning with `quit` that are not exactly `quit\r\n`
+  (such as `quitgarbage` or `quit foo`) are now rejected with `BAD_FORMAT`
+  instead of silently closing the connection (#42). The Alpine package's
+  daemon (1.13) still has this bug, as does upstream master, so the image now
+  builds the daemon from pinned upstream `v1.13` source plus
+  `patches/quit-prefix.patch`, which adds the same trailing-garbage length
+  guard to the `OP_QUIT` dispatch case that `OP_STATS` already has; the
+  patched binary replaces the package binary and everything else about the
+  package is unchanged.
+- `test.sh` now asserts that malformed quit prefixes return `BAD_FORMAT`,
+  that `statsgarbage` continues to return `BAD_FORMAT`, and that a valid
+  `quit\r\n` still closes the connection without a reply (#42).
 - Commands without space delimiters between `pause-tube` and the tube argument
   (such as `pause-tubedefault 5`) are now rejected with `UNKNOWN_COMMAND`
   instead of pausing the tube (#41). The Alpine package's daemon (1.13) still
