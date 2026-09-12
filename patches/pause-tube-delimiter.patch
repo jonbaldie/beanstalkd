@@ -1,0 +1,34 @@
+Fix pause-tube space delimiter handling (issue #41; upstream bug, unfixed in
+v1.13 and on master).
+
+In prot.c, CMD_PAUSE_TUBE was defined as "pause-tube" without a trailing
+space delimiter, whereas all other commands taking arguments (e.g. CMD_PUT,
+CMD_STATS_TUBE, CMD_USE, CMD_WATCH) include a trailing space in their
+macro definition (e.g. "stats-tube ", "use ").
+
+Because CMD_PAUSE_TUBE lacked the trailing space:
+1. which_cmd() matched any command line starting with "pause-tube",
+   such as `pause-tubedefault 5\r\n`.
+2. dispatch_cmd() forwarded c->cmd + CMD_PAUSE_TUBE_LEN directly to
+   read_tube_name(), which parsed the tube name starting immediately
+   at offset 10 ("default 5"), without requiring or checking for a
+   space delimiter.
+3. read_duration() parsed the delay, and the tube was paused, replying
+   PAUSED\r\n instead of rejecting the command as UNKNOWN_COMMAND\r\n.
+
+Per the protocol specification (doc/protocol.txt), commands start with a
+single-word command name, and commands and arguments are separated by a space.
+Define CMD_PAUSE_TUBE as "pause-tube " so that a space delimiter is required
+between the command name and the tube argument, matching the convention of
+all other argument-taking commands.
+
+--- a/prot.c
++++ b/prot.c
+@@ -49,7 +49,7 @@
+ #define CMD_LIST_TUBES_WATCHED "list-tubes-watched"
+ #define CMD_STATS_TUBE "stats-tube "
+ #define CMD_QUIT "quit"
+-#define CMD_PAUSE_TUBE "pause-tube"
++#define CMD_PAUSE_TUBE "pause-tube "
+ 
+ #define CONSTSTRLEN(m) (sizeof(m) - 1)

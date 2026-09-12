@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Commands without space delimiters between `pause-tube` and the tube argument
+  (such as `pause-tubedefault 5`) are now rejected with `UNKNOWN_COMMAND`
+  instead of pausing the tube (#41). The Alpine package's daemon (1.13) still
+  has this bug, as does upstream master, so the image now builds the daemon
+  from pinned upstream `v1.13` source plus `patches/pause-tube-delimiter.patch`,
+  which defines `CMD_PAUSE_TUBE` as `"pause-tube "` so a space delimiter is
+  required after the command name; the patched binary replaces the package binary
+  and everything else about the package is unchanged.
+- `test.sh` now asserts that `pause-tube` commands lacking a space delimiter
+  return `UNKNOWN_COMMAND`, leave tube pause state and stats unmutated, and that
+  valid `pause-tube` commands continue to succeed (#41).
 - Fixed daemon hang when a command line splits `\r\n` across the 224-byte
   read buffer boundary (`LINE_BUF_SIZE`): `c->cmd_read == LINE_BUF_SIZE`
   previously discarded `c->cmd` by resetting `c->cmd_read = 0`, discarding the
