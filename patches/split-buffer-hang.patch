@@ -1,0 +1,85 @@
+Fix hang when command lines split \r\n across 224-byte read buffer boundary
+(issue #40; upstream bug, unfixed in v1.13 and on master).
+
+When a command line splits \r\n across the LINE_BUF_SIZE (224-byte) boundary
+(for instance, 223 bytes of command plus \r\n), scan_line_end() does not detect
+the endline because memchr(s, '\r', size - 1) only inspects up to index 222
+when size == 224. Upon reading 224 bytes without finding an endline,
+conn_process_io() in STATE_WANT_COMMAND transitions to STATE_WANT_ENDLINE and
+unconditionally resets c->cmd_read = 0, discarding the \r at index 223.
+
+When the next read() arrives in STATE_WANT_ENDLINE, \n is placed at index 0.
+scan_line_end() fails to find \r\n because \r was discarded, and the daemon
+hangs indefinitely waiting for a line terminator that the client already sent.
+Subsequent commands on the connection are swallowed as the missing terminator,
+desynchronizing the protocol stream. The same boundary discard occurs if an
+oversized line splits \r\n across subsequent 224-byte boundaries in
+STATE_WANT_ENDLINE.
+
+Additionally, scan_line_end() previously returned 0 immediately if the first
+\r found was not followed by \n, ignoring any subsequent \r\n sequences in the
+buffer.
+
+Fix this by:
+1. Looping in scan_line_end() over all occurrences of \r in the buffer.
+2. When c->cmd_read reaches LINE_BUF_SIZE without finding an endline in
+   STATE_WANT_COMMAND or STATE_WANT_ENDLINE, check whether the final byte in
+   the buffer is \r. If so, preserve it at index 0 (c->cmd[0] = '\r';
+   c->cmd_read = 1;) across the transition to or continuation of
+   STATE_WANT_ENDLINE so the subsequent read can match the incoming \n.
+
+--- a/prot.c
++++ b/prot.c
+@@ -761,15 +761,16 @@
+ static size_t
+ scan_line_end(const char *s, int size)
+ {
+-    char *match;
++    const char *match, *cur = s;
++    int rem = size - 1;
+ 
+-    match = memchr(s, '\r', size - 1);
+-    if (!match)
+-        return 0;
++    while (rem > 0 && (match = memchr(cur, '\r', rem))) {
++        if (match[1] == '\n')
++            return match - s + 2;
+ 
+-    /* this is safe because we only scan size - 1 chars above */
+-    if (match[1] == '\n')
+-        return match - s + 2;
++        rem -= (match - cur + 1);
++        cur = match + 1;
++    }
+ 
+     return 0;
+ }
+@@ -1951,8 +1952,13 @@
+             // Command line too long.
+             // Put connection into special state that discards
+             // the command line until the end line is found.
+-            c->cmd_read = 0; // discard the input so far
+             c->state = STATE_WANT_ENDLINE;
++            if (c->cmd[LINE_BUF_SIZE - 1] == '\r') {
++                c->cmd[0] = '\r';
++                c->cmd_read = 1;
++            } else {
++                c->cmd_read = 0; // discard the input so far
++            }
+         }
+         // We have an incomplete line, so just keep waiting.
+         return;
+@@ -1981,7 +1987,12 @@
+ 
+         if (c->cmd_read == LINE_BUF_SIZE) {
+             // Keep discarding the input since no EOL was found.
+-            c->cmd_read = 0;
++            if (c->cmd[LINE_BUF_SIZE - 1] == '\r') {
++                c->cmd[0] = '\r';
++                c->cmd_read = 1;
++            } else {
++                c->cmd_read = 0;
++            }
+         }
+         return;
+ 
