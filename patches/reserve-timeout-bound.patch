@@ -1,0 +1,34 @@
+Fix reserve-with-timeout bound parsing (issue #39; upstream bug, unfixed in
+v1.13 and on master).
+
+dispatch_cmd() parsed the `reserve-with-timeout` bound with
+read_u32(..., &end_buf): passing a non-NULL end pointer disables
+read_u32()'s full-consumption check (`if (!end && tend[0] != '\0')
+return -1;`), and the captured pointer was never inspected afterwards.
+The case then fell through to OP_RESERVE, whose "don't allow trailing
+garbage" check is guarded by `type == OP_RESERVE`, so it never ran for
+reserve-with-timeout. As a result, trailing garbage
+(`reserve-with-timeout 1garbage`), trailing arguments (`... 0 foo`), and
+trailing whitespace (`... 0 `) were silently accepted: the command
+replied `RESERVED id bytes` and moved a ready job to reserved, instead of
+replying BAD_FORMAT with the queue untouched. Per the protocol
+(doc/protocol.txt), all integers are non-negative decimal values and
+malformed commands must fail with BAD_FORMAT without mutating the queue.
+
+read_u32() callers pass a non-NULL end only when the parse continues with
+the next argument (put, release, bury); the final argument of a command
+is always validated with NULL, as release() already does. Pass NULL here
+to reject trailing characters, matching that convention and the
+kick-bound fix (patches/kick-bound.patch, issue #36).
+
+--- a/prot.c
++++ b/prot.c
+@@ -1437,7 +1437,7 @@
+     case OP_RESERVE_TIMEOUT:
+         errno = 0;
+         uint32 utimeout = 0;
+-        if (read_u32(&utimeout, c->cmd + CMD_RESERVE_TIMEOUT_LEN, &end_buf) != 0 || utimeout > INT_MAX) {
++        if (read_u32(&utimeout, c->cmd + CMD_RESERVE_TIMEOUT_LEN, NULL) != 0 || utimeout > INT_MAX) {
+             reply_msg(c, MSG_BAD_FORMAT);
+             return;
+         }

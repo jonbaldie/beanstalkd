@@ -520,3 +520,145 @@ if [ -n "$ATTACHED_VOLUMES" ]; then
 fi
 
 echo "PASS: default run attaches no volume and docker rm -f leaves none behind."
+
+# ---- Test 9: malformed reserve-with-timeout bounds are rejected and leave the queue unmutated ----
+#
+# Regression for issue #39: dispatch_cmd() parsed the `reserve-with-timeout`
+# bound with read_u32(..., &end_buf), which disables read_u32()'s
+# full-consumption check, and then fell through to the OP_RESERVE case whose
+# trailing-garbage check only applies to `reserve` itself. So trailing garbage
+# (`reserve-with-timeout 1garbage`), trailing arguments (`... 0 foo`), and
+# trailing whitespace (`... 0 `) were silently accepted: the command replied
+# `RESERVED id bytes` and moved a ready job to reserved. Per the protocol
+# (doc/protocol.txt), all integers are non-negative decimal values and
+# malformed commands must return BAD_FORMAT without mutating the queue. The
+# assertion covers queue state, not just response text, so a future regression
+# that only corrupts the response cannot pass here.
+
+check_reserve_timeout_bounds() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete body")
+        response.extend(chunk)
+    return bytes(response)
+
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+def stats(sock):
+    sock.sendall(b"stats\r\n")
+    r = read_line(sock)
+    if not r.startswith(b"OK "):
+        return None
+    body = read_bytes(sock, int(r.split()[1]) + 2)
+    out = {}
+    for line in body.split(b"\n"):
+        line = line.strip()
+        if b": " in line:
+            k, v = line.split(b": ", 1)
+            out[k] = v
+    return out
+
+sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock.settimeout(5)
+
+def cmd(line, body=None):
+    sock.sendall(line)
+    if body is not None:
+        sock.sendall(body)
+    return read_line(sock)
+
+TUBE = b"reserve-timeout-regression"
+sock.sendall(b"use " + TUBE + b"\r\n"); read_line(sock)
+sock.sendall(b"watch " + TUBE + b"\r\n"); read_line(sock)
+sock.sendall(b"ignore default\r\n"); read_line(sock)
+
+def put_ready_job(body):
+    r = cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
+    if not r.startswith(b"INSERTED "):
+        return None
+    return r.split()[1]
+
+# Each malformed bound must yield BAD_FORMAT and leave the job exactly where
+# it was: still ready, nothing reserved or buried.
+for bound in (b"1garbage", b"0 foo", b"0 ", b"-1", b"99999999999", b""):
+    job_id = put_ready_job(b"malformed-" + bound.replace(b" ", b"_") + b"\r\n")
+    if job_id is None:
+        failures.append("setup: put for bound %r failed" % bound)
+        continue
+    stats_before = stats(sock)
+    r = cmd(b"reserve-with-timeout " + bound + b"\r\n")
+    check(r == b"BAD_FORMAT\r\n",
+          "reserve-with-timeout %r: expected BAD_FORMAT (got %r)" % (bound, r))
+    if r.startswith(b"RESERVED"):
+        # The buggy path reserves the job; drain its body so the command
+        # stream stays in sync for the remaining assertions.
+        read_bytes(sock, int(r.split()[2]) + 2)
+    stats_after = stats(sock)
+    if stats_before is not None and stats_after is not None:
+        for key in (b"current-jobs-ready", b"current-jobs-reserved", b"current-jobs-buried"):
+            check(stats_after.get(key) == stats_before.get(key),
+                  "reserve-with-timeout %r mutated %s: %r -> %r"
+                  % (bound, key, stats_before.get(key), stats_after.get(key)))
+    r = cmd(b"peek-ready\r\n")
+    if r.startswith(b"FOUND"):
+        read_bytes(sock, int(r.split()[2]) + 2)  # drain FOUND body before continuing
+    if not r.startswith(b"FOUND " + job_id + b" "):
+        failures.append("reserve-with-timeout %r: job %s left the ready queue (got %r)"
+                        % (bound, job_id, r))
+    if cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
+        failures.append("reserve-with-timeout %r: job %s could not be cleaned up"
+                        % (bound, job_id))
+
+# --- valid non-negative bounds must keep their reserve semantics ---
+# The RESERVED line reports the declared body size (10 for "valid-zero",
+# 9 for "valid-one" — the body's trailing CRLF is the put terminator).
+job_id = put_ready_job(b"valid-zero\r\n")
+r = cmd(b"reserve-with-timeout 0\r\n")
+if r != b"RESERVED " + job_id + b" 10\r\n":
+    failures.append("valid reserve-with-timeout 0: expected RESERVED %s 10 (got %r)"
+                    % (job_id, r))
+else:
+    read_bytes(sock, 10 + 2)  # drain the reserved body plus CRLF
+if cmd(b"touch " + job_id + b"\r\n") != b"TOUCHED\r\n":
+    failures.append("valid reserve-with-timeout 0: reserved job not touchable")
+
+job_id = put_ready_job(b"valid-one\r\n")
+r = cmd(b"reserve-with-timeout 1\r\n")
+if r != b"RESERVED " + job_id + b" 9\r\n":
+    failures.append("valid reserve-with-timeout 1: expected RESERVED %s 9 (got %r)"
+                    % (job_id, r))
+else:
+    read_bytes(sock, 9 + 2)  # drain the reserved body plus CRLF
+
+sock.close()
+
+if failures:
+    for f in failures:
+        print("reserve-timeout regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking malformed reserve-with-timeout bounds are rejected and leave the queue unmutated..."
+check_reserve_timeout_bounds "$PORT"
+echo "PASS: malformed reserve-with-timeout bounds return BAD_FORMAT and the queue is unmutated."
