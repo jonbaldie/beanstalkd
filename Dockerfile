@@ -2,12 +2,17 @@
 # bound is parsed with a bare strtoul(), so `kick 1garbage` is silently
 # truncated and `kick -1` wraps to a huge unsigned count. Both reply `KICKED n`
 # and kick the whole buried queue instead of returning BAD_FORMAT with the
-# queue untouched (issue #36). No upstream release fixes this yet, so the
-# published daemon is built here from the pinned upstream source with a
-# packaging-level patch (patches/kick-bound.patch) that validates the bound
-# with the daemon's own read_u32(), exactly as the other integer arguments are
-# validated. Everything else about the package (user, directories, runtime
-# dependencies) is unchanged; the patched binary replaces the package binary.
+# queue untouched (issue #36). It likewise accepts malformed
+# `reserve-with-timeout` bounds: the bound is parsed with a non-NULL end
+# pointer, which disables read_u32()'s full-consumption check, so trailing
+# garbage is silently accepted and the command reserves a ready job
+# (issue #39). No upstream release fixes these yet, so the published daemon is
+# built here from the pinned upstream source with packaging-level patches
+# (patches/kick-bound.patch, patches/reserve-timeout-bound.patch) that
+# validate the bounds with the daemon's own read_u32(), exactly as the other
+# integer arguments are validated. Everything else about the package (user,
+# directories, runtime dependencies) is unchanged; the patched binary replaces
+# the package binary.
 
 FROM alpine AS build
 

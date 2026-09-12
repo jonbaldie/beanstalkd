@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Malformed `reserve-with-timeout` bounds are now rejected with `BAD_FORMAT`
+  instead of mutating the ready queue: `reserve-with-timeout 1garbage`
+  (trailing garbage), `... 0 foo` (trailing argument), and `... 0 ` (trailing
+  whitespace) previously returned `RESERVED id bytes` and moved a ready job to
+  reserved (#39). The Alpine package's daemon (1.13) still has this bug, as
+  does upstream master, so the image now builds the daemon from pinned
+  upstream `v1.13` source plus `patches/reserve-timeout-bound.patch`, which
+  validates the bound with the daemon's own `read_u32()` full-consumption
+  check (passing `NULL` for the end pointer, as the final argument of every
+  other command is validated); the patched binary replaces the package binary
+  and everything else about the package is unchanged.
+- `test.sh` now asserts both the response and the queue state for malformed
+  and valid `reserve-with-timeout` bounds, so a future parser regression
+  cannot pass by checking response text alone (#39).
+
 ## [1.0.2] - 2026-09-10
 
 ### Fixed
