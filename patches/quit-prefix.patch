@@ -1,0 +1,44 @@
+Fix quit command prefix matching (issue #42; upstream bug, unfixed in v1.13
+and on master).
+
+In prot.c, which_cmd() matches command words with strncmp(), so any command
+line beginning with "quit" (e.g. `quitgarbage\r\n` or `quit foo\r\n`) maps to
+OP_QUIT. Unlike other commands, the OP_QUIT dispatch case validated nothing:
+it set c->state = STATE_CLOSE and returned, silently closing the connection
+with no response.
+
+Single-word commands already guard against trailing garbage: the OP_STATS
+case rejects lines whose length is not exactly CMD_STATS_LEN + 2 (\r\n
+included) with BAD_FORMAT\r\n (e.g. `statsgarbage\r\n`). OP_QUIT lacked the
+equivalent check.
+
+Per the protocol specification (doc/protocol.txt), the command is exactly
+`quit\r\n`; a malformed command line must yield BAD_FORMAT\r\n.
+
+Add CMD_QUIT_LEN and the same trailing-garbage guard to the OP_QUIT case so
+only the exact line `quit\r\n` closes the connection and malformed quit
+prefixes return BAD_FORMAT\r\n.
+
+--- a/prot.c
++++ b/prot.c
+@@ -53,6 +53,8 @@
+ 
+ #define CONSTSTRLEN(m) (sizeof(m) - 1)
+ 
++#define CMD_QUIT_LEN CONSTSTRLEN(CMD_QUIT)
++
+ #define CMD_PEEK_READY_LEN CONSTSTRLEN(CMD_PEEK_READY)
+ #define CMD_PEEK_DELAYED_LEN CONSTSTRLEN(CMD_PEEK_DELAYED)
+ #define CMD_PEEK_BURIED_LEN CONSTSTRLEN(CMD_PEEK_BURIED)
+@@ -1808,6 +1810,11 @@
+         return;
+ 
+     case OP_QUIT:
++        /* don't allow trailing garbage: only the exact line `quit` quits */
++        if (c->cmd_len != CMD_QUIT_LEN + 2) {
++            reply_msg(c, MSG_BAD_FORMAT);
++            return;
++        }
+         c->state = STATE_CLOSE;
+         return;
+ 
