@@ -662,3 +662,124 @@ PY
 echo "Checking malformed reserve-with-timeout bounds are rejected and leave the queue unmutated..."
 check_reserve_timeout_bounds "$PORT"
 echo "PASS: malformed reserve-with-timeout bounds return BAD_FORMAT and the queue is unmutated."
+
+# ---- Test 10: command lines splitting \r\n across 224-byte read buffer boundary do not hang ----
+#
+# Regression for issue #40: when a client sends a command line where `\r` lands
+# at the 224th byte (LINE_BUF_SIZE boundary) and `\n` lands at the 225th byte,
+# beanstalkd previously failed to detect the line terminator because scan_line_end()
+# did not inspect index 223 (memchr size - 1 limit) and the buffer discard reset
+# c->cmd_read = 0, discarding the `\r`. The daemon hung in STATE_WANT_ENDLINE
+# waiting for a line terminator already received. When followed by another
+# command, the first line of the new command was swallowed as the missing
+# terminator.
+#
+# The test asserts:
+# 1. 223 bytes + CRLF immediately replies BAD_FORMAT\r\n without hanging.
+# 2. Chunked delivery (CR in one TCP segment, LF in the next) replies BAD_FORMAT\r\n.
+# 3. Multiple-boundary split (447 bytes + CRLF) replies BAD_FORMAT\r\n.
+# 4. Pipelining after the split terminator correctly processes subsequent commands.
+
+check_split_buffer_boundary() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+import time
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete body")
+        response.extend(chunk)
+    return bytes(response)
+
+port = int(sys.argv[1])
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+# Case 1: 223 bytes + CRLF (225 bytes total).
+# Byte 224 is \r (fills LINE_BUF_SIZE); byte 225 is \n.
+s = socket.create_connection(("localhost", port), timeout=3)
+s.settimeout(3)
+try:
+    s.sendall(b"x" * 223 + b"\r\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n", "case 1 (223+CRLF): expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("case 1 (223+CRLF): daemon hung waiting for endline")
+finally:
+    s.close()
+
+# Case 2: Chunked delivery across TCP segments.
+s = socket.create_connection(("localhost", port), timeout=3)
+s.settimeout(3)
+try:
+    s.sendall(b"x" * 223 + b"\r")
+    time.sleep(0.05)
+    s.sendall(b"\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n", "case 2 (chunked CR then LF): expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("case 2 (chunked CR then LF): daemon hung waiting for endline")
+finally:
+    s.close()
+
+# Case 3: Multiple boundary split: 447 bytes + CRLF (449 bytes total).
+# Byte 448 is \r (2 * LINE_BUF_SIZE); byte 449 is \n.
+s = socket.create_connection(("localhost", port), timeout=3)
+s.settimeout(3)
+try:
+    s.sendall(b"x" * 447 + b"\r\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n", "case 3 (447+CRLF): expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("case 3 (447+CRLF): daemon hung waiting for endline")
+finally:
+    s.close()
+
+# Case 4: Pipelined command stream after split terminator.
+# The split command must return BAD_FORMAT\r\n, and the subsequent valid
+# command must execute cleanly rather than being consumed as the missing terminator.
+s = socket.create_connection(("localhost", port), timeout=3)
+s.settimeout(3)
+try:
+    s.sendall(b"x" * 223 + b"\r\nput 1 0 60 4\r\ntest\r\n")
+    r1 = read_line(s)
+    check(r1 == b"BAD_FORMAT\r\n", "case 4 pipelining r1: expected BAD_FORMAT, got %r" % r1)
+    r2 = read_line(s)
+    check(r2.startswith(b"INSERTED "), "case 4 pipelining r2: expected INSERTED, got %r" % r2)
+    if r2.startswith(b"INSERTED "):
+        job_id = r2.split()[1]
+        s.sendall(b"delete " + job_id + b"\r\n")
+        r3 = read_line(s)
+        check(r3 == b"DELETED\r\n", "case 4 cleanup: expected DELETED, got %r" % r3)
+except (socket.timeout, TimeoutError):
+    failures.append("case 4 pipelining: daemon hung or desynchronized stream")
+finally:
+    s.close()
+
+if failures:
+    for f in failures:
+        print("split-buffer regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking command lines splitting \\r\\n across buffer boundary do not hang..."
+check_split_buffer_boundary "$PORT"
+echo "PASS: command lines splitting \\r\\n across buffer boundary return BAD_FORMAT and preserve stream sync."
+

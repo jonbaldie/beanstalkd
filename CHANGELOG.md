@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Fixed daemon hang when a command line splits `\r\n` across the 224-byte
+  read buffer boundary (`LINE_BUF_SIZE`): `c->cmd_read == LINE_BUF_SIZE`
+  previously discarded `c->cmd` by resetting `c->cmd_read = 0`, discarding the
+  `\r` at index 223, and `scan_line_end()` did not inspect index 223. The daemon
+  hung in `STATE_WANT_ENDLINE` waiting for a line terminator already received,
+  and swallowed subsequent commands as the missing terminator (#40).
+  The image now builds with `patches/split-buffer-hang.patch`, which preserves
+  a trailing `\r` across the transition to or continuation of `STATE_WANT_ENDLINE`
+  and loops in `scan_line_end()` across all occurrences of `\r`.
+- `test.sh` now asserts that split-boundary command lines, chunked deliveries,
+  multiple-boundary splits, and pipelined commands return `BAD_FORMAT` immediately
+  and preserve protocol stream synchronization (#40).
 - Malformed `reserve-with-timeout` bounds are now rejected with `BAD_FORMAT`
   instead of mutating the ready queue: `reserve-with-timeout 1garbage`
   (trailing garbage), `... 0 foo` (trailing argument), and `... 0 ` (trailing

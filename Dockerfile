@@ -6,13 +6,14 @@
 # `reserve-with-timeout` bounds: the bound is parsed with a non-NULL end
 # pointer, which disables read_u32()'s full-consumption check, so trailing
 # garbage is silently accepted and the command reserves a ready job
-# (issue #39). No upstream release fixes these yet, so the published daemon is
+# (issue #39). It also hangs indefinitely when command lines split \r\n across
+# the 224-byte read buffer boundary, discarding \r and desynchronizing the
+# connection (issue #40). No upstream release fixes these yet, so the published daemon is
 # built here from the pinned upstream source with packaging-level patches
-# (patches/kick-bound.patch, patches/reserve-timeout-bound.patch) that
-# validate the bounds with the daemon's own read_u32(), exactly as the other
-# integer arguments are validated. Everything else about the package (user,
-# directories, runtime dependencies) is unchanged; the patched binary replaces
-# the package binary.
+# (patches/kick-bound.patch, patches/reserve-timeout-bound.patch,
+# patches/split-buffer-hang.patch) that validate bounds and preserve split line
+# terminators. Everything else about the package (user, directories, runtime
+# dependencies) is unchanged; the patched binary replaces the package binary.
 
 FROM alpine AS build
 
