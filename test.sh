@@ -981,3 +981,132 @@ PY
 echo "Checking malformed quit prefixes are rejected..."
 check_quit_prefix "$PORT"
 echo "PASS: malformed quit prefixes return BAD_FORMAT."
+
+# ---- Test 13: malformed put commands with oversize body return BAD_FORMAT ----
+#
+# Regression for issue #48: dispatch_cmd()'s OP_PUT case evaluated
+# `if (body_size > job_data_size_limit)` before `if (end_buf[0] != '\0')`.
+# A well-formed oversize put correctly enters STATE_BITBUCKET and replies
+# JOB_TOO_BIG after discarding the body. A malformed command line (trailing
+# whitespace or extra arguments) has no body, so the same skip() hung
+# waiting for body_size+2 bytes that never arrive, and swallowed any
+# subsequent pipelined commands. Per the protocol (doc/protocol.txt), a
+# command line with the wrong number of arguments or trailing garbage must
+# return BAD_FORMAT immediately without attempting to read a body.
+#
+# The test asserts:
+# 1. put 0 0 0 65536 \r\n (just over max-job-size, trailing space) returns
+#    BAD_FORMAT\r\n without hanging.
+# 2. put 0 0 0 70000 foo\r\n (extra argument) returns BAD_FORMAT\r\n.
+# 3. put 0 0 0 65535 \r\n (at-limit trailing space) still returns
+#    BAD_FORMAT\r\n (control: the in-limit path already rejected garbage).
+# 4. A pipelined valid put after the malformed oversize line is executed,
+#    not swallowed into the bit-bucket.
+# 5. A well-formed oversize put with its body still returns JOB_TOO_BIG\r\n.
+
+check_put_oversize_trailing_garbage() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+failures = []
+
+def check(cond, message):
+    if not cond:
+        failures.append(message)
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+port = int(sys.argv[1])
+
+def connect():
+    sock = socket.create_connection(("localhost", port), timeout=3)
+    sock.settimeout(3)
+    return sock
+
+# Case 1: just-over-limit + trailing space, no body
+s = connect()
+try:
+    s.sendall(b"put 0 0 0 65536 \r\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n",
+          "put 65536 trailing space: expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("put 65536 trailing space: daemon hung waiting for body")
+finally:
+    s.close()
+
+# Case 2: oversize + extra argument, no body
+s = connect()
+try:
+    s.sendall(b"put 0 0 0 70000 foo\r\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n",
+          "put 70000 foo: expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("put 70000 foo: daemon hung waiting for body")
+finally:
+    s.close()
+
+# Case 3: at-limit trailing space still BAD_FORMAT (in-limit control)
+s = connect()
+try:
+    s.sendall(b"put 0 0 0 65535 \r\n")
+    r = read_line(s)
+    check(r == b"BAD_FORMAT\r\n",
+          "put 65535 trailing space: expected BAD_FORMAT, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("put 65535 trailing space: daemon hung waiting for body")
+finally:
+    s.close()
+
+# Case 4: pipelining after malformed oversize put
+s = connect()
+try:
+    s.sendall(b"put 0 0 0 65536 \r\nput 1 0 60 4\r\ntest\r\n")
+    r1 = read_line(s)
+    check(r1 == b"BAD_FORMAT\r\n",
+          "pipeline r1: expected BAD_FORMAT, got %r" % r1)
+    r2 = read_line(s)
+    check(r2.startswith(b"INSERTED "),
+          "pipeline r2: expected INSERTED, got %r" % r2)
+    if r2.startswith(b"INSERTED "):
+        job_id = r2.split()[1]
+        s.sendall(b"delete " + job_id + b"\r\n")
+        r3 = read_line(s)
+        check(r3 == b"DELETED\r\n",
+              "pipeline cleanup: expected DELETED, got %r" % r3)
+except (socket.timeout, TimeoutError):
+    failures.append("pipeline: daemon hung or swallowed the pipelined put")
+finally:
+    s.close()
+
+# Case 5: well-formed oversize put with body still JOB_TOO_BIG
+s = connect()
+try:
+    s.sendall(b"put 0 0 0 65536\r\n" + b"x" * 65536 + b"\r\n")
+    r = read_line(s)
+    check(r == b"JOB_TOO_BIG\r\n",
+          "well-formed oversize put: expected JOB_TOO_BIG, got %r" % r)
+except (socket.timeout, TimeoutError):
+    failures.append("well-formed oversize put: daemon hung")
+finally:
+    s.close()
+
+if failures:
+    for f in failures:
+        print("put-oversize-trailing-garbage regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+echo "Checking malformed oversize put commands return BAD_FORMAT without hanging..."
+check_put_oversize_trailing_garbage "$PORT"
+echo "PASS: malformed oversize put commands return BAD_FORMAT and preserve stream sync."

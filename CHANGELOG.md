@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Malformed `put` commands whose declared body size exceeds max-job-size
+  (such as `put 0 0 0 70000 ` with trailing whitespace, or
+  `put 0 0 0 70000 foo` with an extra argument) are now rejected with
+  `BAD_FORMAT` instead of hanging in bit-bucket mode waiting for a body
+  the client never sends (#48). The Alpine package's daemon (1.13) still
+  has this bug, as does upstream master, so the image now builds the
+  daemon from pinned upstream `v1.13` source plus
+  `patches/put-oversize-trailing-garbage.patch`, which validates
+  command-line syntax before considering `JOB_TOO_BIG`; the patched
+  binary replaces the package binary and everything else about the
+  package is unchanged.
+- `test.sh` now asserts that malformed oversize `put` commands return
+  `BAD_FORMAT` without hanging, that a pipelined valid `put` after the
+  malformed line is executed rather than swallowed, and that a
+  well-formed oversize `put` still returns `JOB_TOO_BIG` (#48).
+
 ## [1.0.3] - 2026-09-13
 
 ### Fixed
@@ -142,6 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added non-root user `USER beanstalk` to run the daemon with unprivileged permissions.
 - Removed deprecated `MAINTAINER` instruction from `Dockerfile`.
 
+[Unreleased]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.3...HEAD
 [1.0.3]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.0...v1.0.1
