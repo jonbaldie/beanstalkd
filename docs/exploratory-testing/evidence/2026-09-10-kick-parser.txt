@@ -1,0 +1,65 @@
+Exploratory evidence: malformed kick bounds
+============================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 67a2c19 (v1.0.1)
+Image: jonbaldie/beanstalkd:latest, built from the repository Dockerfile
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+The following two cases were each replayed in two fresh containers. Each
+container used a random loopback-only host port and was removed with its
+temporary resources after the run.
+
+Case A: trailing non-numeric characters
+----------------------------------------
+
+Setup:
+
+    use bound                 -> USING bound
+    watch bound               -> WATCHING 2
+    ignore default            -> WATCHING 1
+    put 1 0 60 9 / candidate  -> INSERTED 1
+    reserve-with-timeout 0    -> RESERVED 1 9 / candidate
+    bury 1 1                   -> BURIED
+
+Request and observation:
+
+    kick 1garbage              -> KICKED 1
+    peek-ready                 -> FOUND 1 9 / candidate
+
+Expected according to the beanstalk protocol: BAD_FORMAT, with the job still
+buried. The same response and state mutation occurred in both clean replays.
+
+Case B: negative bound
+----------------------
+
+Setup:
+
+    put 1 0 60 8 / buried-a   -> INSERTED 1
+    reserve-with-timeout 0    -> RESERVED 1 8 / buried-a
+    bury 1 1                   -> BURIED
+    put 1 0 60 8 / buried-b   -> INSERTED 2
+    reserve-with-timeout 0    -> RESERVED 2 8 / buried-b
+    bury 2 1                   -> BURIED
+
+Request and observation:
+
+    kick -1                   -> KICKED 2
+    reserve-with-timeout 0    -> RESERVED 1 8 / buried-a
+    delete 1                   -> DELETED
+    reserve-with-timeout 0    -> RESERVED 2 8 / buried-b
+    delete 2                   -> DELETED
+
+Expected: BAD_FORMAT, because the protocol's bound is a non-negative integer;
+neither buried job should move. The negative request kicked both buried jobs
+in both clean replays.
+
+Reference
+---------
+
+The upstream protocol documents BAD_FORMAT for non-numeric characters where an
+integer is expected and defines kick's bound as an integer:
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L28-L46
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L371-L383

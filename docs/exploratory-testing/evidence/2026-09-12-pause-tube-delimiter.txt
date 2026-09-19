@@ -1,0 +1,85 @@
+Exploratory evidence: pause-tube accepts command without space delimiter
+========================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, built from the repository Dockerfile
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+The following sequence was replayed across three clean containers. Each
+container used a random loopback-only host port and was removed with its
+temporary resources after the run.
+
+Request and observation
+-----------------------
+
+Setup: clean container.
+
+Request:
+
+    pause-tubedefault 5\r\n
+
+Observation:
+
+    PAUSED\r\n
+
+Verification:
+
+    stats-tube default\r\n
+
+Observation:
+
+    cmd-pause-tube: 1
+    pause: 5
+    pause-time-left: 5
+
+The tube "default" was successfully paused for 5 seconds by the command
+`pause-tubedefault 5`.
+
+Contrast with other commands without space delimiter:
+
+    usedefault\r\n        -> UNKNOWN_COMMAND\r\n
+    watchdefault\r\n       -> UNKNOWN_COMMAND\r\n
+    ignoredefault\r\n      -> UNKNOWN_COMMAND\r\n
+    stats-tubedefault\r\n  -> BAD_FORMAT\r\n
+
+Expected according to the beanstalk protocol:
+`pause-tube <tube-name> <delay>\r\n`. A command string `pause-tubedefault 5`
+has no delimiter between the command name and the tube argument, and should be
+rejected as UNKNOWN_COMMAND (or BAD_FORMAT).
+
+Root cause
+----------
+In prot.c line 52:
+```c
+#define CMD_PAUSE_TUBE "pause-tube"
+```
+whereas all other commands with arguments include a trailing space delimiter:
+```c
+#define CMD_PUT "put "
+#define CMD_PEEKJOB "peek "
+#define CMD_RESERVE_TIMEOUT "reserve-with-timeout "
+#define CMD_RESERVE_JOB "reserve-job "
+#define CMD_DELETE "delete "
+#define CMD_RELEASE "release "
+#define CMD_BURY "bury "
+#define CMD_KICK "kick "
+#define CMD_KICKJOB "kick-job "
+#define CMD_TOUCH "touch "
+#define CMD_STATSJOB "stats-job "
+#define CMD_USE "use "
+#define CMD_WATCH "watch "
+#define CMD_IGNORE "ignore "
+#define CMD_STATS_TUBE "stats-tube "
+```
+Because `CMD_PAUSE_TUBE` lacks the trailing space, `which_cmd()` matches
+`pause-tubedefault 5` via `strncmp(c->cmd, "pause-tube", 10) == 0`, and
+`read_tube_name()` parses `default` starting directly at index 10 without
+requiring a space delimiter.
+
+Reference
+---------
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L51-L53
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L529-L535

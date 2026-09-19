@@ -1,0 +1,68 @@
+Exploratory evidence: split \r\n across 224-byte read buffer causes hang
+=======================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, built from the repository Dockerfile
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+The following sequence was replayed across three clean containers. Each
+container used a random loopback-only host port and was removed with its
+temporary resources after the run.
+
+Case A: 225-byte line (223 bytes of text followed by \r\n)
+-----------------------------------------------------------
+
+Setup: clean container.
+
+Request:
+
+    Send 225 bytes in one TCP segment:
+    b"x" * 223 + b"\r\n"
+    (where byte 224 is \r, and byte 225 is \n)
+
+Observation:
+The daemon does not reply. A socket recv with timeout=2.0s times out every time.
+The daemon hangs indefinitely in STATE_WANT_ENDLINE.
+
+Subsequent request on the same connection:
+
+    Send: put 0 0 0 1\r\nx\r\n
+
+Observation:
+
+    Reply: BAD_FORMAT\r\nUNKNOWN_COMMAND\r\n
+
+The daemon swallowed the first line of the new command (`put 0 0 0 1\r\n`) as
+the terminator for the previous oversized command, replied BAD_FORMAT, and then
+evaluated `x\r\n` as an UNKNOWN_COMMAND. The protocol stream was desynchronized.
+
+Contrast with 226-byte line (224 bytes of text followed by \r\n):
+Where \r\n are both in the second read chunk (bytes 225 and 226):
+The daemon immediately replies `BAD_FORMAT\r\n`.
+
+Root cause
+----------
+In prot.c (conn_process_io):
+`LINE_BUF_SIZE` is 224 (11 + MAX_TUBE_NAME_LEN + 12).
+In `STATE_WANT_COMMAND`:
+1. `read()` fills `c->cmd` up to 224 bytes (ending with `\r` at index 223).
+2. `scan_line_end()` scans `size - 1` (223) bytes for `\r`. The `\r` at index 223
+   is not scanned.
+3. `c->cmd_read == LINE_BUF_SIZE` triggers:
+   ```c
+   if (c->cmd_read == LINE_BUF_SIZE) {
+       c->cmd_read = 0;
+       c->state = STATE_WANT_ENDLINE;
+   }
+   ```
+   This resets `c->cmd_read` to 0, completely discarding the `\r`.
+4. In the next read in `STATE_WANT_ENDLINE`, `read()` reads `\n` into index 0.
+5. `scan_line_end()` looks for `\r\n` in `\n`, fails to find `\r\n`, and leaves
+   the connection waiting indefinitely in `STATE_WANT_ENDLINE`.
+
+Reference
+---------
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L44-L50

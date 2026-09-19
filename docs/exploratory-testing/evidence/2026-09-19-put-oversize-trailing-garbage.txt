@@ -1,0 +1,88 @@
+Exploratory evidence: malformed put commands with oversize body hang in bitbucket mode
+======================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 9c5ed37 (v1.0.3)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Each trial used a fresh container on a random loopback-only host port.
+
+Reproduction
+------------
+The following tests were executed across three clean containers:
+
+Trial 1:
+  put 0 0 0 70000 \r\n         -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  put 0 0 0 70000 foo\r\n      -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  Control (size 5 space)      -> b'BAD_FORMAT\r\n'
+  Control (size 5 foo)        -> b'BAD_FORMAT\r\n'
+  Pipelining test             -> TIMED OUT (pipelined valid put was swallowed into bitbucket)
+Trial 2:
+  put 0 0 0 70000 \r\n         -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  put 0 0 0 70000 foo\r\n      -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  Control (size 5 space)      -> b'BAD_FORMAT\r\n'
+  Control (size 5 foo)        -> b'BAD_FORMAT\r\n'
+  Pipelining test             -> TIMED OUT (pipelined valid put was swallowed into bitbucket)
+Trial 3:
+  put 0 0 0 70000 \r\n         -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  put 0 0 0 70000 foo\r\n      -> TIMED OUT (hung in STATE_BITBUCKET waiting for 70002 bytes)
+  Control (size 5 space)      -> b'BAD_FORMAT\r\n'
+  Control (size 5 foo)        -> b'BAD_FORMAT\r\n'
+  Pipelining test             -> TIMED OUT (pipelined valid put was swallowed into bitbucket)
+
+Expected behavior
+-----------------
+Per doc/protocol.txt (lines 44-50):
+"BAD_FORMAT\r\n The client sent a command line that was not well-formed.
+ This can happen if the line's length exceeds 224 bytes including \r\n,
+ if the name of a tube exceeds 200 bytes, if non-numeric
+ characters occur where an integer is expected, if the wrong number of
+ arguments are present, or if the command line is mal-formed in any other
+ way."
+
+Any malformed `put` command line containing trailing whitespace, trailing
+characters, or extra arguments must immediately be rejected with
+`BAD_FORMAT\r\n` without attempting to read or discard a body.
+
+Actual behavior
+---------------
+In prot.c (`case OP_PUT` in `dispatch_cmd`):
+
+```c
+        if (body_size > job_data_size_limit) {
+            /* throw away the job body and respond with JOB_TOO_BIG */
+            skip(c, (int64)body_size + 2, MSG_JOB_TOO_BIG);
+            return;
+        }
+
+        /* don't allow trailing garbage */
+        if (end_buf[0] != '\0') {
+            reply_msg(c, MSG_BAD_FORMAT);
+            return;
+        }
+```
+
+The check `if (body_size > job_data_size_limit)` is evaluated before the
+trailing-garbage guard `if (end_buf[0] != '\0')`. When `body_size` exceeds
+`job_data_size_limit` (default 65,535 bytes) on a malformed command line,
+beanstalkd calls `skip(c, (int64)body_size + 2, MSG_JOB_TOO_BIG)` and enters
+`STATE_BITBUCKET`.
+
+Because the client sent a malformed command line (such as a trailing space or
+an extra argument), it does not send the declared body bytes. The daemon hangs
+indefinitely waiting for up to 70,000+ bytes, and any subsequent pipelined
+commands are silently swallowed into the bit-bucket and discarded, completely
+desynchronizing and locking up the client connection.
+
+In contrast, when `body_size <= 65535`, the exact same malformed inputs
+reach `end_buf[0] != '\0'` and immediately return `BAD_FORMAT\r
+`,
+preserving stream synchronization.
+
+References
+----------
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L44-L50
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L124-L177
