@@ -12,15 +12,19 @@
 # delimiter between the command word and tube argument, pausing the tube
 # instead of returning UNKNOWN_COMMAND (issue #41). It also closes the
 # connection without a response for any command line beginning with "quit"
-# that is not exactly `quit\r\n` (issue #42). No upstream release fixes
-# these yet, so the published daemon is built here from the pinned upstream
-# source with packaging-level patches (patches/kick-bound.patch,
+# that is not exactly `quit\r\n` (issue #42). It also hangs in bit-bucket
+# mode for malformed `put` commands whose body size exceeds max-job-size,
+# waiting to discard a body the client never sends instead of returning
+# BAD_FORMAT (issue #48). No upstream release fixes these yet, so the
+# published daemon is built here from the pinned upstream source with
+# packaging-level patches (patches/kick-bound.patch,
 # patches/reserve-timeout-bound.patch, patches/split-buffer-hang.patch,
-# patches/pause-tube-delimiter.patch, patches/quit-prefix.patch) that
-# validate bounds, require command delimiters, preserve split line
-# terminators, and reject malformed quit prefixes. Everything else about the
-# package (user, directories, runtime dependencies) is unchanged; the patched
-# binary replaces the package binary.
+# patches/pause-tube-delimiter.patch, patches/quit-prefix.patch,
+# patches/put-oversize-trailing-garbage.patch) that validate bounds, require
+# command delimiters, preserve split line terminators, reject malformed quit
+# prefixes, and reject malformed oversize puts before entering bit-bucket
+# mode. Everything else about the package (user, directories, runtime
+# dependencies) is unchanged; the patched binary replaces the package binary.
 
 FROM alpine AS build
 

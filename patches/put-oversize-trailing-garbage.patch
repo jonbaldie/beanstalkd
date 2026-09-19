@@ -1,0 +1,45 @@
+Fix malformed oversize put hanging in bitbucket (issue #48; upstream bug,
+unfixed in v1.13 and on master).
+
+In prot.c, dispatch_cmd()'s OP_PUT case evaluated
+`if (body_size > job_data_size_limit)` before the trailing-garbage guard
+`if (end_buf[0] != '\0')`. A well-formed oversize put correctly calls
+skip() and replies JOB_TOO_BIG after discarding the body. A malformed
+command line (trailing whitespace or extra arguments) has no body, so
+the same skip() entered STATE_BITBUCKET and hung waiting for
+body_size+2 bytes that never arrive. Subsequent pipelined commands
+were swallowed into the bit-bucket.
+
+Per the protocol specification (doc/protocol.txt), a command line with
+the wrong number of arguments or trailing garbage must yield
+BAD_FORMAT\r\n immediately, without attempting to read a body.
+
+Validate command-line syntax before considering JOB_TOO_BIG so
+malformed oversize puts return BAD_FORMAT\r\n and well-formed oversize
+puts still skip the body and reply JOB_TOO_BIG.
+
+--- a/prot.c
++++ b/prot.c
+@@ -1322,16 +1322,16 @@
+             return;
+         }
+         op_ct[type]++;
+-
+-        if (body_size > job_data_size_limit) {
+-            /* throw away the job body and respond with JOB_TOO_BIG */
+-            skip(c, (int64)body_size + 2, MSG_JOB_TOO_BIG);
+-            return;
+-        }
+ 
+         /* don't allow trailing garbage */
+         if (end_buf[0] != '\0') {
+             reply_msg(c, MSG_BAD_FORMAT);
++            return;
++        }
++
++        if (body_size > job_data_size_limit) {
++            /* throw away the job body and respond with JOB_TOO_BIG */
++            skip(c, (int64)body_size + 2, MSG_JOB_TOO_BIG);
+             return;
+         }
+ 
