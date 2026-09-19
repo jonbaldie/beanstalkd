@@ -1,0 +1,24 @@
+Exploratory evidence: job-size boundary
+=======================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+
+On one fresh container, each request used an `x` body of the declared size
+followed by the required CRLF:
+
+    put 0 0 60 65535  -> INSERTED 1
+    put 0 0 60 65536  -> JOB_TOO_BIG
+    put 0 0 60 65537  -> JOB_TOO_BIG
+
+Follow-up stats:
+
+    max-job-size: 65535
+    current-jobs-ready: 1
+    cmd-put: 3
+
+The boundary behavior was consistent with the image's reported configured
+maximum; no defect was filed from this probe.

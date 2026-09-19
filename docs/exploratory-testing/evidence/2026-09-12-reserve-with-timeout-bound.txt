@@ -1,0 +1,83 @@
+Exploratory evidence: malformed reserve-with-timeout bounds
+===========================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, built from the repository Dockerfile
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+The following sequence was replayed across three clean containers. Each
+container used a random loopback-only host port and was removed with its
+temporary resources after the run.
+
+Case A: trailing non-numeric characters with ready job
+-----------------------------------------------------
+
+Setup:
+
+    put 0 0 60 4 / test       -> INSERTED 1
+
+Request and observation:
+
+    reserve-with-timeout 1garbage  -> RESERVED 1 4 / test
+    peek-ready                     -> NOT_FOUND
+
+Expected according to the beanstalk protocol:
+BAD_FORMAT, leaving the queue untouched with the job remaining ready.
+
+Observed:
+The command was accepted as timeout 1, immediately reserved job 1 to the worker,
+and removed it from the ready queue. The same response and state mutation occurred
+in all three clean replays.
+
+Case B: trailing non-numeric characters without ready job
+--------------------------------------------------------
+
+Setup: clean container, no jobs.
+
+Request and observation:
+
+    reserve-with-timeout 0garbage  -> TIMED_OUT (immediately)
+    reserve-with-timeout 1garbage  -> TIMED_OUT (after ~1 second)
+    reserve-with-timeout 0 foo     -> TIMED_OUT (immediately)
+
+Expected: BAD_FORMAT for all malformed timeout strings.
+
+Observed:
+All variations silently accepted the leading integer digits, ignored all trailing
+garbage/arguments, and executed normal reserve-with-timeout behavior.
+
+Root cause
+----------
+In prot.c (dispatch_cmd):
+```c
+    case OP_RESERVE_TIMEOUT:
+        errno = 0;
+        uint32 utimeout = 0;
+        if (read_u32(&utimeout, c->cmd + CMD_RESERVE_TIMEOUT_LEN, &end_buf) != 0 || utimeout > INT_MAX) {
+            reply_msg(c, MSG_BAD_FORMAT);
+            return;
+        }
+        timeout = (int)utimeout;
+        /* Falls through */
+
+    case OP_RESERVE:
+        /* don't allow trailing garbage */
+        if (type == OP_RESERVE && c->cmd_len != CMD_RESERVE_LEN + 2) {
+            reply_msg(c, MSG_BAD_FORMAT);
+            return;
+        }
+```
+read_u32() is passed &end_buf, which disables read_u32's own check for end-of-string.
+The caller never checks `end_buf[0] == '\0'`, and falls through to OP_RESERVE where
+the trailing garbage check is guarded by `if (type == OP_RESERVE && ...)`. Since
+type is OP_RESERVE_TIMEOUT, the check is skipped.
+
+Reference
+---------
+The upstream protocol documents BAD_FORMAT for non-numeric characters where an
+integer is expected:
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L28-L46
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L201-L220

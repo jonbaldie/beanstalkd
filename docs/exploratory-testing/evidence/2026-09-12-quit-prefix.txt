@@ -1,0 +1,57 @@
+Exploratory evidence: malformed quit prefixes close the connection
+==================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Each trial used a fresh container on a random loopback-only host port. The
+client sent one command and read until the first response or EOF.
+
+Reproduction
+------------
+
+Request:
+
+    quitgarbage\r\n
+
+Observed in three clean replays:
+
+    trial 1: EOF (b'')
+    trial 2: EOF (b'')
+    trial 3: EOF (b'')
+
+The daemon closed the connection without returning BAD_FORMAT or
+UNKNOWN_COMMAND.
+
+Contrasts:
+
+    quit\r\n          -> EOF (the documented quit behavior)
+    quit foo\r\n      -> EOF (also closes without an error)
+    statsgarbage\r\n -> BAD_FORMAT\r\n
+    
+Expected behavior
+-----------------
+
+The protocol defines the quit command as exactly `quit\r\n`. It also says that
+malformed or unknown commands receive an error response, including
+`BAD_FORMAT\r\n` or `UNKNOWN_COMMAND\r\n`. A command beginning with `quit` but
+containing extra bytes should therefore be rejected without treating it as the
+valid quit command.
+
+Actual behavior
+---------------
+
+The command parser prefix-matches `quit` and the `OP_QUIT` dispatch case does
+not validate that the full command line is exactly `quit\r\n`. Any line whose
+command begins with `quit`, including `quitgarbage` and `quit foo`, silently
+closes the client connection.
+
+References
+----------
+
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L28-L50
+https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L668-L670

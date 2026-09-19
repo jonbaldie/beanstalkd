@@ -1,0 +1,61 @@
+Exploratory evidence: AFK stateful protocol journeys
+=====================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit bebc2c3 (v1.0.2)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Every journey used a fresh container on a random loopback-only host port.
+All containers were removed after each journey.
+
+Journey 1: cross-client ownership and TTR recovery
+---------------------------------------------------
+
+    put 10 0 1 4 / work              -> INSERTED 1
+    worker A reserve-with-timeout 0   -> RESERVED 1 4 / work
+    worker B delete 1                 -> NOT_FOUND
+    worker B release 1 0 0            -> NOT_FOUND
+    worker B bury 1 0                  -> NOT_FOUND
+    worker B touch 1                  -> NOT_FOUND
+    [wait 1.25 seconds for TTR expiry]
+    worker B reserve-with-timeout 0   -> RESERVED 1 4 / work
+    stats-job 1: state=reserved, timeouts=1
+    worker B delete 1                 -> DELETED
+    worker A delete 1                 -> NOT_FOUND
+
+Journey 2: reserve-job across delayed, buried, and ready states
+---------------------------------------------------------------
+
+The worker used and watched `afkstates`, then ignored `default`.
+
+    put 20 0 60 5 / ready             -> INSERTED 1
+    put 10 30 60 7 / delayed           -> INSERTED 2
+    reserve-job 2                     -> RESERVED 2 7 / delayed
+    bury 2 5                           -> BURIED
+    peek-buried                        -> FOUND 2 7 / delayed
+    kick-job 2                         -> KICKED
+    reserve-with-timeout 0             -> RESERVED 2 7 / delayed
+    delete 2                            -> DELETED
+    reserve-job 1                      -> RESERVED 1 5 / ready
+    delete 1                            -> DELETED
+    reserve-with-timeout 0             -> TIMED_OUT
+
+Journey 3: pause and drain mode
+--------------------------------
+
+    put 0 0 60 6 / paused              -> INSERTED 1
+    pause-tube afkpause 1              -> PAUSED
+    reserve-with-timeout 0             -> TIMED_OUT
+    stats-tube afkpause                -> OK; pause=1
+    [wait 1.2 seconds]
+    reserve-with-timeout 0             -> RESERVED 1 6 / paused
+    delete 1                            -> DELETED
+    SIGUSR1                             -> stats draining=true
+    put 0 0 60 7 / blocked              -> DRAINING
+    stats current-jobs-ready           -> 0
+
+All observed results matched the documented state transitions. No queue
+mutation or stale-owner action was observed outside the expected transitions.
