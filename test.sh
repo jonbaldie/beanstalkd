@@ -46,35 +46,28 @@ cleanup() {
 }
 
 assert_loopback_port() {
-    container="$1"
-    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$container")
+    loopback_container="$1"
+    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$loopback_container" 2>/dev/null || true)
     if [ -z "$host_ips" ]; then
-        echo "FAIL: $container did not publish port 11300."
-        exit 1
+        echo "FAIL: $loopback_container did not publish port 11300." >&2
+        return 1
     fi
     for host_ip in $host_ips; do
         if [ "$host_ip" != "127.0.0.1" ]; then
-            echo "FAIL: $container published port 11300 on $host_ip instead of loopback."
-            exit 1
+            echo "FAIL: $loopback_container published port 11300 on $host_ip instead of loopback." >&2
+            return 1
         fi
     done
 }
 
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' HUP TERM
-docker run -d --name "$CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 "$IMAGE" > /dev/null
-assert_loopback_port "$CONTAINER_NAME"
-PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$CONTAINER_NAME")
-if [ -z "$PORT" ] || [ "$PORT" = "<no value>" ]; then
-    echo "FAIL: could not determine the mapped host port for $CONTAINER_NAME."
-    echo "Container logs:"
-    docker logs "$CONTAINER_NAME"
-    exit 1
-fi
+report_container_failure() {
+    failed_container="$1"
+    failure_message="$2"
+    echo "FAIL: $failure_message" >&2
+    echo "Container logs:" >&2
+    docker logs "$failed_container" >&2 || true
+}
 
-# ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
-#
 # NOTE: nc -z is intentionally avoided here because Docker's userland proxy
 # completes the TCP handshake on the mapped host port before the container-side
 # port is even open, giving a false positive. We instead send an actual
@@ -120,21 +113,116 @@ except Exception:
 }
 
 MAX_RETRIES=15
-RETRY_COUNT=0
-echo "Waiting for beanstalkd to respond on port $PORT..."
+wait_for_beanstalkd() {
+    ready_container="$1"
+    ready_port="$2"
+    ready_retry_count=0
+    echo "Waiting for beanstalkd to respond on port $ready_port..." >&2
 
-while ! beanstalkd_ok "$PORT"; do
-    RETRY_COUNT=$((RETRY_COUNT+1))
-    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
-        echo "FAIL: beanstalkd did not respond on port $PORT within $MAX_RETRIES seconds."
-        echo "Container logs:"
-        docker logs "$CONTAINER_NAME"
-        exit 1
+    while ! beanstalkd_ok "$ready_port"; do
+        ready_retry_count=$((ready_retry_count+1))
+        if [ "$ready_retry_count" -ge "$MAX_RETRIES" ]; then
+            report_container_failure "$ready_container" \
+                "beanstalkd did not respond on port $ready_port within $MAX_RETRIES seconds."
+            return 1
+        fi
+        sleep 1
+    done
+
+    echo "PASS: beanstalkd is responding on port $ready_port." >&2
+}
+
+run_beanstalkd_container() {
+    if [ -n "$provision_volume" ]; then
+        docker run -d \
+            --name "$provision_container" \
+            --label "$OWNER_LABEL" \
+            -p 127.0.0.1:0:11300 \
+            -v "$provision_volume" \
+            "$IMAGE" "$@"
+    else
+        docker run -d \
+            --name "$provision_container" \
+            --label "$OWNER_LABEL" \
+            -p 127.0.0.1:0:11300 \
+            "$IMAGE" "$@"
     fi
-    sleep 1
-done
+}
 
-echo "PASS: beanstalkd is responding on port $PORT."
+start_beanstalkd() {
+    provision_container="$CONTAINER_NAME"
+    provision_volume=""
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --volume)
+                if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                    echo "FAIL: start_beanstalkd requires a value after --volume." >&2
+                    return 1
+                fi
+                provision_volume="$2"
+                shift 2
+                ;;
+            --name)
+                if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+                    echo "FAIL: start_beanstalkd requires a value after --name." >&2
+                    return 1
+                fi
+                provision_container="$2"
+                shift 2
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if ! run_beanstalkd_container "$@" > /dev/null; then
+        report_container_failure "$provision_container" \
+            "could not start beanstalkd container $provision_container."
+        return 1
+    fi
+
+    provision_running=$(docker inspect --format='{{.State.Running}}' \
+        "$provision_container" 2>/dev/null || true)
+    if [ "$provision_running" != true ]; then
+        report_container_failure "$provision_container" \
+            "beanstalkd container $provision_container exited before it became ready."
+        return 1
+    fi
+
+    if ! assert_loopback_port "$provision_container"; then
+        report_container_failure "$provision_container" \
+            "beanstalkd container $provision_container did not use a loopback port binding."
+        return 1
+    fi
+
+    provision_port=$(docker inspect \
+        --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' \
+        "$provision_container" 2>/dev/null || true)
+    if [ -z "$provision_port" ] || [ "$provision_port" = "<no value>" ]; then
+        report_container_failure "$provision_container" \
+            "could not determine the mapped host port for $provision_container."
+        return 1
+    fi
+
+    if ! wait_for_beanstalkd "$provision_container" "$provision_port"; then
+        return 1
+    fi
+
+    printf '%s\n' "$provision_port"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' HUP TERM
+
+# ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
+PORT=$(start_beanstalkd --name "$CONTAINER_NAME")
 
 # ---- Test 2: Process runs as non-root user ----
 #
@@ -350,16 +438,10 @@ if docker volume inspect "$PERSISTENCE_VOLUME" > /dev/null 2>&1; then
     exit 1
 fi
 docker volume create --label "$OWNER_LABEL" "$PERSISTENCE_VOLUME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
-PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
-if [ "$PERSISTENCE_RUNNING" != true ]; then
-    echo "FAIL: persistent beanstalkd container exited before it became ready."
-    echo "Container logs:"
-    docker logs "$PERSISTENCE_CONTAINER_NAME"
-    exit 1
-fi
-assert_loopback_port "$PERSISTENCE_CONTAINER_NAME"
-PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
+PERSISTENCE_PORT=$(start_beanstalkd \
+    --name "$PERSISTENCE_CONTAINER_NAME" \
+    --volume "$PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data)
 
 put_persistent_job() {
     python3 - "$1" <<'PY'
@@ -388,18 +470,11 @@ except OSError:
 PY
 }
 
-PERSISTENCE_RETRY_COUNT=0
-echo "Waiting for persistent beanstalkd to accept a job on port $PERSISTENCE_PORT..."
-while ! put_persistent_job "$PERSISTENCE_PORT"; do
-    PERSISTENCE_RETRY_COUNT=$((PERSISTENCE_RETRY_COUNT+1))
-    if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
-        echo "FAIL: persistent beanstalkd did not accept a job on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
-        echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_NAME"
-        exit 1
-    fi
-    sleep 1
-done
+if ! put_persistent_job "$PERSISTENCE_PORT"; then
+    report_container_failure "$PERSISTENCE_CONTAINER_NAME" \
+        "persistent beanstalkd did not accept a job on port $PERSISTENCE_PORT."
+    exit 1
+fi
 
 # Allow beanstalkd's default WAL fsync interval to complete before stopping it.
 sleep 1
@@ -407,16 +482,10 @@ sleep 1
 echo "Restarting persistent beanstalkd container..."
 docker stop -t 15 "$PERSISTENCE_CONTAINER_NAME" > /dev/null
 docker rm "$PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker run -d --name "$PERSISTENCE_CONTAINER_NAME" --label "$OWNER_LABEL" -p 127.0.0.1:0:11300 -v "$PERSISTENCE_VOLUME:/data" "$IMAGE" beanstalkd -b /data > /dev/null
-PERSISTENCE_RUNNING=$(docker inspect --format='{{.State.Running}}' "$PERSISTENCE_CONTAINER_NAME")
-if [ "$PERSISTENCE_RUNNING" != true ]; then
-    echo "FAIL: restarted persistent beanstalkd container exited before it became ready."
-    echo "Container logs:"
-    docker logs "$PERSISTENCE_CONTAINER_NAME"
-    exit 1
-fi
-assert_loopback_port "$PERSISTENCE_CONTAINER_NAME"
-PERSISTENCE_PORT=$(docker inspect --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' "$PERSISTENCE_CONTAINER_NAME")
+PERSISTENCE_PORT=$(start_beanstalkd \
+    --name "$PERSISTENCE_CONTAINER_NAME" \
+    --volume "$PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data)
 
 reserve_persistent_job() {
     python3 - "$1" <<'PY'
@@ -469,28 +538,11 @@ with sock:
 PY
 }
 
-PERSISTENCE_RETRY_COUNT=0
-while :; do
-    if reserve_persistent_job "$PERSISTENCE_PORT"; then
-        break
-    else
-        RESERVE_RC=$?
-    fi
-    if [ "$RESERVE_RC" -ne 1 ]; then
-        echo "FAIL: restarted persistent beanstalkd did not recover the persisted job."
-        echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_NAME"
-        exit 1
-    fi
-    PERSISTENCE_RETRY_COUNT=$((PERSISTENCE_RETRY_COUNT+1))
-    if [ "$PERSISTENCE_RETRY_COUNT" -ge "$MAX_RETRIES" ]; then
-        echo "FAIL: restarted persistent beanstalkd did not accept a connection on port $PERSISTENCE_PORT within $MAX_RETRIES seconds."
-        echo "Container logs:"
-        docker logs "$PERSISTENCE_CONTAINER_NAME"
-        exit 1
-    fi
-    sleep 1
-done
+if ! reserve_persistent_job "$PERSISTENCE_PORT"; then
+    report_container_failure "$PERSISTENCE_CONTAINER_NAME" \
+        "restarted persistent beanstalkd did not recover the persisted job."
+    exit 1
+fi
 
 echo "PASS: job survived a container restart on a Docker-managed named volume."
 
@@ -504,7 +556,7 @@ echo "PASS: job survived a container restart on a Docker-managed named volume."
 
 echo "Checking default run attaches no anonymous volume..."
 
-docker run -d --name "$VOLUME_LEAK_CONTAINER_NAME" --label "$OWNER_LABEL" "$IMAGE" > /dev/null
+start_beanstalkd --name "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
 ATTACHED_VOLUMES=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
 docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
 
