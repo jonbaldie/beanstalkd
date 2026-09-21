@@ -88,5 +88,11 @@ if [ "$RC" -eq 0 ]; then
     exit 1
 fi
 
+if ! grep -Fq "Container logs:" "$OUTPUT_FILE"; then
+    echo "FAIL: test.sh did not print container logs after docker run failed post-create."
+    cat "$OUTPUT_FILE"
+    exit 1
+fi
+
 echo "PASS: test.sh removes containers created by a failing docker run."
 echo "PASS: test.sh removes anonymous volumes attached to those containers."
