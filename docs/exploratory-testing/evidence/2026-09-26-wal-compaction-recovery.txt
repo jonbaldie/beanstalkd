@@ -1,0 +1,67 @@
+Exploratory evidence: Write-Ahead Log (WAL) persistence, file rollover, compaction, and directory locking
+========================================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 57453ce (v1.0.5)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Storage used: Docker-managed named volume mounted to /data inside containers.
+Daemon parameters: beanstalkd -b /data -s 4096 (small 4KB WAL files).
+
+Journey 3 Execution Log
+-----------------------
+
+1. Concurrent directory locking (waldirlock):
+   Container 1 started with volume mounted at /data.
+   Container 2 started with same volume mounted at /data.
+   Container 2 logs:
+     beanstalkd: walg.c:426 in waldirlock: fcntl: Resource temporarily unavailable
+     beanstalkd: serv.c:24 in srv_acquire_wal: failed to lock wal dir /data
+   Container 2 exit code: 10
+   Result: waldirlock held exclusive lock (/data/lock), cleanly terminating secondary instance.
+
+2. Binlog file rollover:
+   Producer put 50 jobs with 150-byte bodies into tube "wal_test".
+   With -s 4096, each 4KB file holds ~20-25 records.
+   Directory listing /data before deletion:
+     binlog.1
+     binlog.2
+     binlog.3
+     binlog.4
+     binlog.5
+     lock
+   Result: Multiple binlog files cleanly generated upon reaching the 4KB limit.
+
+3. Compaction and dead record reclamation:
+   Producer inserted 3 special test jobs:
+     Job 51: Ready in "ready_tube"
+     Job 52: Delayed (100s) in "delayed_tube"
+     Job 53: Buried in "buried_tube" (pri: 75)
+   Producer deleted the first 45 jobs from "wal_test".
+   Producer performed a trigger write to invoke walmaint / walcompact.
+   Directory listing /data after deletion and compaction:
+     binlog.4
+     binlog.5
+     lock
+   Result: binlog.1, binlog.2, binlog.3 unlinked by walgc after their records were dead.
+
+4. Container stop, recreation, and persistence recovery:
+   Container 1 stopped and removed.
+   Container 3 started using the same persistent volume and -b /data -s 4096.
+   Client connected to Container 3:
+     list-tubes:
+       - default
+       - wal_test
+       - ready_tube
+       - delayed_tube
+       - buried_tube
+     use ready_tube; peek-ready       -> FOUND 51 10 / ready_data
+     use delayed_tube; peek-delayed   -> FOUND 52 12 / delayed_data (state: delayed)
+     use buried_tube; peek-buried     -> FOUND 53 11 / buried_data (state: buried, pri: 75)
+   Clean deletion of all 3 recovered jobs succeeded:
+     delete 51 -> DELETED
+     delete 52 -> DELETED
+     delete 53 -> DELETED
