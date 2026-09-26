@@ -1,0 +1,88 @@
+Exploratory evidence: multi-tube routing, cross-tube worker competition, tube pause isolation, and empty tube garbage collection
+==================================================================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 57453ce (v1.0.5)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Live tests were conducted on a freshly spawned container with random loopback port mapping.
+
+Journey 1 Execution Log
+-----------------------
+
+1. Initial state inspection:
+   list-tubes
+   -> OK 14
+   ---
+   - default
+
+2. Valid tube naming with allowed punctuation (+-+/;.$_()):
+   use alpha+1    -> USING alpha+1
+   use beta-2     -> USING beta-2
+   use gamma/3    -> USING gamma/3
+   use delta;4    -> USING delta;4
+   use epsilon.5  -> USING epsilon.5
+   use zeta$6     -> USING zeta$6
+   use eta_7      -> USING eta_7
+   use theta(8)   -> USING theta(8)
+
+3. Tube name boundary checks:
+   use <200 chars> -> USING <200 chars>  (maximum valid length accepted)
+   use <201 chars> -> BAD_FORMAT         (length overflow rejected)
+   use -invalid    -> BAD_FORMAT         (leading hyphen rejected)
+   use bad tube    -> BAD_FORMAT         (embedded whitespace rejected)
+   use bad:tube    -> BAD_FORMAT         (unsupported colon character rejected)
+
+4. Multi-tube routing and worker competition:
+   Worker 1: watch urgent_queue, ignore default -> WATCHING 1 (urgent_queue)
+   Worker 2: watch bulk_queue, ignore default   -> WATCHING 1 (bulk_queue)
+   Worker 3: watch urgent_queue, watch bulk_queue, ignore default -> WATCHING 2 (urgent_queue, bulk_queue)
+
+   Producer: put 100 0 10 8 / bulk_job in bulk_queue     -> INSERTED 1
+   Producer: put 10 0 10 10 / urgent_job in urgent_queue -> INSERTED 2
+
+   Worker 1 reserve-with-timeout 1 -> RESERVED 2 10 / urgent_job
+   Worker 2 reserve-with-timeout 1 -> RESERVED 1 8 / bulk_job
+
+   Both workers received the jobs targeted for their watched tube.
+   Worker 1 delete 2 -> DELETED
+   Worker 2 delete 1 -> DELETED
+
+5. Priority ordering across tubes:
+   Producer: put 50 0 10 4 / low1 in urgent_queue -> INSERTED 3
+   Producer: put 5 0 10 5 / high1 in bulk_queue   -> INSERTED 4
+
+   Worker 3 (watching both tubes) reserve-with-timeout 1:
+   -> RESERVED 4 5 / high1 (pri 5 scheduled before pri 50 despite different tubes)
+
+   Worker 3 delete 4 -> DELETED
+   Worker 3 delete 3 -> DELETED
+
+6. Tube pause isolation:
+   Producer: put 10 0 10 6 / urgent in urgent_queue -> INSERTED 5
+   Producer: put 100 0 10 4 / bulk in bulk_queue    -> INSERTED 6
+
+   Producer: pause-tube urgent_queue 10 -> PAUSED
+   Producer: stats-tube urgent_queue    -> OK; pause: 10
+
+   Worker 1 (watching only urgent_queue) reserve-with-timeout 1 -> TIMED_OUT
+   Worker 3 (watching both tubes) reserve-with-timeout 1:
+   -> RESERVED 6 4 / bulk (bypassed paused urgent_queue, retrieved ready job from bulk_queue)
+   Worker 3 delete 6 -> DELETED
+
+   Producer: pause-tube urgent_queue 0 -> PAUSED (immediate unpause)
+   Worker 1 reserve-with-timeout 1 -> RESERVED 5 6 / urgent
+   Worker 1 delete 5 -> DELETED
+
+7. Dynamic tube garbage collection:
+   Producer: use transient_tube_xyz
+   Producer: put 0 0 10 4 / temp -> INSERTED 7
+   Producer: list-tubes -> contains "- transient_tube_xyz"
+   Producer: delete 7 -> DELETED
+   Producer: use default
+   All client sockets closed and disconnected.
+   New connection opened.
+   list-tubes -> only "- default"; transient_tube_xyz was deleted upon client disconnect.
