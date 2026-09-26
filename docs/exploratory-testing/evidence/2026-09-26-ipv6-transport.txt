@@ -1,0 +1,8 @@
+Exploratory evidence: IPv6-only listener and host transport
+Docker bridge: enableIPv6=false ipam=[{"Subnet":"192.168.215.0/24","Gateway":"192.168.215.1"}]
+Container: beanstalkd-explore-ipv6-190100ecd2
+Published mapping: [::1]:32768
+Host mapping parsed as [::1]:32768.
+PASS: IPv6 client reached beanstalkd stats, inserted, reserved, and deleted a job.
+Service stats response contained 987 bytes.
+Cleanup: removed beanstalkd-explore-ipv6-190100ecd2

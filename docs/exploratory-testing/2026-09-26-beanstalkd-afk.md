@@ -108,11 +108,81 @@ Observed:
 
 Evidence: [2026-09-26-wal-compaction-recovery.txt](evidence/2026-09-26-wal-compaction-recovery.txt).
 
+## Follow-up pass on the same date
+
+The additional journeys below were run from commit `813fd32` on 2026-09-26.
+The image was rebuilt with `make test`; the suite passed, including container
+cleanup, volume isolation, occupied-port and name-collision handling, the
+protocol regressions, and persistence checks. The built image ID was
+`sha256:effc1e220cae058ca696ecc46d0e96689febb3feebdab7fb23073a2d89be48cb`.
+
+### 4. Competing workers and reservation retry
+
+Goal: start multiple waiting workers before a burst of jobs arrives, then make
+sure each job is delivered once with its original payload and that a worker can
+continue using its connection after a reservation timeout.
+
+Observed:
+
+- Eight workers waited on the same tube while a producer inserted 100 jobs.
+  Every job was delivered and deleted exactly once, all 100 bodies matched, and
+  `stats-tube default` reported zero ready and reserved jobs afterward.
+- An empty `reserve-with-timeout 1` returned `TIMED_OUT`. The same client then
+  received a newly inserted job on a subsequent reservation and deleted it.
+
+Evidence: [2026-09-26-concurrent-worker-recovery.txt](evidence/2026-09-26-concurrent-worker-recovery.txt).
+
+### 5. WAL recovery after abrupt daemon termination
+
+Goal: verify recovery from a daemon process killed without a graceful shutdown,
+including a job that was reserved by a worker when the daemon stopped.
+
+Observed:
+
+- With a named volume at `/data` and `beanstalkd -b /data -s 4096 -f 0`, the
+  initial job states were buried, delayed, reserved, and ready. `-f 0` made the
+  daemon fsync each WAL update.
+- Docker reported exit code 137 after `SIGKILL`. A new container using the same
+  volume restored the buried, delayed, and ready jobs to their prior states and
+  recovered the in-flight reserved job as ready.
+- All four payloads matched their pre-kill values. The recovered ready jobs
+  could be reserved and deleted; the delayed and buried jobs could be deleted.
+
+Evidence: [2026-09-26-wal-sigkill-recovery.txt](evidence/2026-09-26-wal-sigkill-recovery.txt).
+
+### 6. IPv6 client connection
+
+Goal: use an IPv6 client connection to reach a daemon configured with an IPv6
+listener, then complete normal queue work over that connection.
+
+Observed:
+
+- A fresh container was started with `beanstalkd -l :: -p 11300` and published
+  on `[::1]` using a random host port.
+- An IPv6 client connected to `::1`, read `stats`, inserted a job, reserved it,
+  verified its body, and deleted it successfully.
+- The Docker bridge reported `enableIPv6=false`. The host-side IPv6 published
+  connection worked in this environment, but the container bridge itself did
+  not provide an end-to-end IPv6 network path.
+
+Evidence: [2026-09-26-ipv6-transport.txt](evidence/2026-09-26-ipv6-transport.txt).
+
 ## Confirmed bugs filed
 
 No new product bugs were uncovered during this exploratory pass. All observed
 behaviors across multi-tube routing, worker scheduling and timeouts, and WAL
-persistence conformed to the protocol specification and documented design.
+persistence conformed to the protocol specification and documented design. The
+follow-up concurrency, abrupt-process-recovery, and host-side IPv6 journeys also
+completed without a confirmed product bug.
+
+## Usability observations
+
+- A client connection remained usable after `reserve-with-timeout` returned
+  `TIMED_OUT`; a later reservation on that connection received newly inserted
+  work.
+- IPv6 host access worked when the daemon was explicitly configured with
+  `-l ::` and the port was published on `[::1]`. The IPv6-disabled Docker bridge
+  limits this result to the host-published path exercised here.
 
 ## Existing confirmed findings not duplicated
 
@@ -134,14 +204,27 @@ The repository already resolved earlier findings:
 - In Journey 3, `docker logs` did not capture daemon lock failure output on stdout
   because `twarn` writes to stderr. Redirecting stderr in the test runner
   successfully confirmed exit code 10 and the lock failure message.
+- The first concurrency driver waited for the `INSERTED` response before sending
+  the job body. Beanstalkd correctly waited for the declared body; sending the
+  command and body before reading the response corrected the driver, and the
+  full 100-job replay passed.
+- The first WAL recovery attempt left `crash_tube` outside the worker's watch
+  list, so `reserve-with-timeout` returned `TIMED_OUT`. Watching the producer's
+  tube corrected the setup. A later verification attempt also needed to consume
+  the `reserve-job` payload and its CRLF before issuing `delete`; after draining
+  the response body, the crash recovery replay passed.
 
 ## Unresolved and unexplored areas
 
-No unresolved product failures remained in the selected journeys. This pass did
-not attempt power-loss simulation during mid-write of WAL blocks, deliberate
-read-only filesystem mounting, or IPv6-only transport.
+No unresolved product failures remained in the selected journeys. The follow-up
+tested recovery after a daemon process `SIGKILL` with fsync enabled; it did not
+simulate power loss during a WAL write or host storage failure. IPv6 was tested
+from the host through an IPv6 published port, but an IPv6-enabled container
+bridge was unavailable because Docker reported `enableIPv6=false`. Deliberate
+read-only filesystem mounting also remains unexplored.
 
 ## Cleanup and limitations
 
 All containers and Docker named volumes created during this pass were destroyed.
-Testing was conducted using Docker 29.4.0 (OrbStack, aarch64) on macOS.
+The follow-up containers and its named volume were also removed. Testing was
+conducted using Docker 29.4.0 (OrbStack, aarch64) on macOS.

@@ -18,4 +18,7 @@ docker run -d --name beanstalkd -p 11300:11300 \
   jonbaldie/beanstalkd:latest beanstalkd -b /data
 ```
 
+For queue, persistence, worker, and container behavior observed in practice,
+see the [exploratory testing reports](docs/exploratory-testing/README.md).
+
 (c) 2017 Jonathan Baldie
