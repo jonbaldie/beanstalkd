@@ -1,0 +1,12 @@
+Exploratory evidence: WAL recovery after abrupt daemon termination
+Image: jonbaldie/beanstalkd:latest; Docker Server: 29.4.0
+Volume: beanstalkd-explore-crash-4c9c5e720f; daemon flags: -b /data -s 4096 -f 0 (always fsync)
+First daemon ready at 127.0.0.1:32918.
+Pre-crash job states: {'1': 'buried', '2': 'delayed', '3': 'reserved', '4': 'ready'}
+First daemon terminated with SIGKILL; Docker exit code: 137.
+Restarted daemon ready at 127.0.0.1:32919 on the same named volume.
+Post-recovery job states: {'1': 'buried', '2': 'delayed', '3': 'ready', '4': 'ready'}
+PASS: ready, delayed, and buried records survived SIGKILL; the in-flight reservation recovered as ready.
+PASS: all four recovered payloads matched and jobs could be completed or deleted.
+Cleanup: removed container beanstalkd-explore-crash-b-4c9c5e720f
+Cleanup: removed volume beanstalkd-explore-crash-4c9c5e720f

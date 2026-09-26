@@ -1,0 +1,10 @@
+Exploratory evidence: concurrent workers and reservation retry
+Image: jonbaldie/beanstalkd:latest
+Container: beanstalkd-explore-concurrency-0c2f74cc46
+Docker Server: 29.4.0; mapped endpoint: 127.0.0.1:32914
+Started 8 waiting workers before inserting 100 jobs.
+PASS: 100 jobs were delivered and deleted exactly once across 8 workers; all payloads matched.
+PASS: post-run stats-tube reports 0 ready and 0 reserved jobs.
+PASS: empty-queue reserve-with-timeout 1 returned TIMED_OUT.
+PASS: the same client retried after timeout, received the next job, and deleted it.
+Cleanup: removed beanstalkd-explore-concurrency-0c2f74cc46
