@@ -1,0 +1,142 @@
+Exploratory evidence: beanstalkd reverts buried and delayed jobs reserved via reserve-job back to buried/delayed upon restart
+==================================================================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit f303c7d (v1.0.5)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Each trial used a fresh container on a random loopback-only host port with a dedicated named volume.
+
+Reproduction
+------------
+The following tests were executed across three clean instances:
+
+--- Running Trial 1 ---
+Producer put: INSERTED 1
+Worker 1 reserve: RESERVED 1 5
+Worker 1 bury: BURIED
+Worker 2 reserve-job: RESERVED 1 5
+Worker 2 release (delay 0): RELEASED
+Before restart peek-ready: FOUND 1 5
+Before restart peek-buried: NOT_FOUND
+After restart peek-ready: NOT_FOUND
+After restart peek-buried: FOUND 1 5
+Trial 1 PASS: Bug reproduced cleanly (job reverted from ready to buried upon restart).
+
+--- Running Trial 2 ---
+Producer put: INSERTED 1
+Worker 1 reserve: RESERVED 1 5
+Worker 1 bury: BURIED
+Worker 2 reserve-job: RESERVED 1 5
+Worker 2 release (delay 0): RELEASED
+Before restart peek-ready: FOUND 1 5
+Before restart peek-buried: NOT_FOUND
+After restart peek-ready: NOT_FOUND
+After restart peek-buried: FOUND 1 5
+Trial 2 PASS: Bug reproduced cleanly (job reverted from ready to buried upon restart).
+
+--- Running Trial 3 ---
+Producer put: INSERTED 1
+Worker 1 reserve: RESERVED 1 5
+Worker 1 bury: BURIED
+Worker 2 reserve-job: RESERVED 1 5
+Worker 2 release (delay 0): RELEASED
+Before restart peek-ready: FOUND 1 5
+Before restart peek-buried: NOT_FOUND
+After restart peek-ready: NOT_FOUND
+After restart peek-buried: FOUND 1 5
+Trial 3 PASS: Bug reproduced cleanly (job reverted from ready to buried upon restart).
+
+Expected behavior
+-----------------
+When a job is in the ready queue before restart (or held as an in-flight reservation),
+it must remain in the ready queue after container/daemon restart. Per protocol and
+design, WAL persistence must accurately record queue state transitions so that work
+returning to the ready queue is not lost or reverted to a buried/delayed state upon restart.
+
+Actual behavior
+---------------
+When a buried job is reserved via `reserve-job <id>` and subsequently returned to the
+ready queue (via `release <id> <pri> 0`, worker disconnection, or TTR expiration), the
+job transitions to `Ready` in memory, but no WAL record is written to disk. The WAL
+retains the obsolete `Buried` state.
+
+When beanstalkd restarts and replays the WAL (`prot_replay`), it encounters the
+`Buried` record and places the job back into the buried queue (`bury_job(s, j, 0)`).
+The job silently disappears from the ready queue and is withheld from workers.
+
+Similarly, if a delayed job is reserved via `reserve-job <id>` and released to ready
+with delay 0, it reverts to `Delayed` with remaining delay upon restart.
+
+Furthermore, if the daemon restarts while a worker is actively executing a job reserved
+via `reserve-job` from the buried state, the job recovers as `Buried` rather than
+recovering as `Ready` (the designed crash-recovery behavior for in-flight jobs).
+
+Root cause
+----------
+In `prot.c`:
+1. `OP_RESERVE_JOB` allows reserving jobs directly from the `Buried` or `Delayed` state:
+   ```c
+   // Job can be in ready, buried or delayed states.
+   if (j->r.state == Ready) {
+       j = remove_ready_job(j);
+   } else if (j->r.state == Buried) {
+       j = remove_buried_job(j);
+   } else if (j->r.state == Delayed) {
+       j = remove_delayed_job(j);
+   }
+   ...
+   conn_reserve_job(c, j);
+   ```
+   Unlike `kick_buried_job` and `kick_delayed_job` (which reserve WAL space with
+   `walresvupdate(&s->wal)` and call `enqueue_job(s, j, 0, 1)` with `update_store = 1`),
+   `OP_RESERVE_JOB` does not update the WAL or reserve WAL space.
+
+2. In `OP_RELEASE`:
+   ```c
+   r = enqueue_job(c->srv, j, delay, !!delay);
+   ```
+   When `delay == 0`, `!!delay` evaluates to `0` (`update_store = 0`).
+
+3. In `conn_close` (worker disconnect):
+   ```c
+   int r = enqueue_job(c->srv, j, 0, 0);
+   ```
+   `update_store` is hardcoded to `0`.
+
+4. In `conn_timeout` (TTR expiration):
+   ```c
+   int r = enqueue_job(c->srv, remove_this_reserved_job(c, j), 0, 0);
+   ```
+   `update_store` is hardcoded to `0`.
+
+Because `update_store` is `0`, `walwrite()` is never invoked. The on-disk binlog retains
+the job's prior state (`Buried` or `Delayed`).
+
+During WAL replay at startup (`prot_replay`):
+```c
+   switch (j->r.state) {
+   case Buried: {
+       bury_job(s, j, 0);
+       break;
+   }
+   case Delayed:
+       t = nanoseconds();
+       if (t < j->r.deadline_at) {
+           delay = j->r.deadline_at - t;
+       }
+       /* Falls through */
+   default:
+       r = enqueue_job(s, j, delay, 0);
+   }
+```
+The switch inspects `j->r.state` from the binlog, finds `Buried`, and invokes
+`bury_job(s, j, 0)`, reverting the job back to buried.
+
+References
+----------
+- https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L254-L269
+- https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L271-L300
