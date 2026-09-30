@@ -1,0 +1,59 @@
+Fix reserve-job WAL persistence (issue #61; upstream bug, unfixed in
+v1.13 and on master).
+
+When persistence is enabled (-b <dir>), reserving a buried or delayed job via
+`reserve-job <id>` transitions the job to Reserved in memory (and subsequently
+to Ready upon release with delay 0, worker disconnection, or TTR timeout),
+but OP_RESERVE_JOB previously failed to update the Write-Ahead Log (WAL) or
+reserve WAL space.
+
+Because return-to-ready operations (OP_RELEASE with delay 0, conn_close, and
+conn_timeout) bypass walwrite() under the assumption that reserved jobs
+already exist as Ready on disk, the on-disk binlog permanently retained the
+stale Buried or Delayed state record. Upon daemon restart or crash recovery,
+prot_replay replayed the binlog and restored the job back to Buried or Delayed,
+removing active work from the queue. Furthermore, if the daemon restarted
+while a worker held an in-flight reservation of a previously buried job, the
+job recovered as Buried rather than Ready.
+
+When reserving a job currently in Buried or Delayed state, reserve WAL space
+via walresvupdate(&c->srv->wal) before modifying queue state, and write the
+updated job record to the WAL via walwrite(&c->srv->wal, j) followed by
+walmaint(&c->srv->wal). The record is written with state Reserved, which
+readrec() converts to Ready during binlog replay, ensuring the job recovers
+as Ready across daemon restarts.
+
+--- a/prot.c
++++ b/prot.c
+@@ -1488,6 +1488,16 @@
+             return;
+         }
+ 
++        int should_update_wal = (j->r.state == Buried || j->r.state == Delayed);
++        if (should_update_wal) {
++            int z = walresvupdate(&c->srv->wal);
++            if (!z) {
++                reply_serr(c, MSG_OUT_OF_MEMORY);
++                return;
++            }
++            j->walresv += z;
++        }
++
+         // Job can be in ready, buried or delayed states.
+         if (j->r.state == Ready) {
+             j = remove_ready_job(j);
+@@ -1505,6 +1515,14 @@
+         global_stat.reserved_ct++;
+ 
+         conn_reserve_job(c, j);
++
++        if (should_update_wal) {
++            if (!walwrite(&c->srv->wal, j)) {
++                reply_serr(c, MSG_INTERNAL_ERROR);
++                return;
++            }
++            walmaint(&c->srv->wal);
++        }
+         reply_job(c, j, MSG_RESERVED);
+         return;
+ 

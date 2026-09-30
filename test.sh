@@ -28,6 +28,8 @@ CONTAINER_NAME="beanstalkd-test-$RUN_ID"
 PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$RUN_ID"
 PERSISTENCE_VOLUME="beanstalkd-persistence-test-$RUN_ID"
 VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$RUN_ID"
+RESERVE_JOB_PERSISTENCE_CONTAINER_NAME="beanstalkd-reserve-job-persistence-test-$RUN_ID"
+RESERVE_JOB_PERSISTENCE_VOLUME="beanstalkd-reserve-job-persistence-test-$RUN_ID"
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -1162,3 +1164,234 @@ PY
 echo "Checking malformed oversize put commands return BAD_FORMAT without hanging..."
 check_put_oversize_trailing_garbage "$PORT"
 echo "PASS: malformed oversize put commands return BAD_FORMAT and preserve stream sync."
+
+# ---- Test 15: jobs reserved via reserve-job persist across daemon restart ----
+#
+# Regression for issue #61: When persistence is enabled (-b <dir>), reserving
+# a buried or delayed job via `reserve-job` and releasing it with delay 0,
+# disconnecting the worker, or timing out on TTR transitions the job to Ready
+# in memory, but OP_RESERVE_JOB failed to update the WAL or reserve WAL space.
+# The WAL on disk retained the stale Buried or Delayed state, and on container
+# restart, prot_replay restored the job back to Buried or Delayed.
+# Furthermore, an in-flight reserved job recovered as Buried rather than Ready
+# upon restart.
+#
+# A buried or delayed job reserved via `reserve-job` must persist its updated
+# state to the WAL so that on restart, the job recovers as Ready.
+
+echo "Checking reserve-job WAL persistence across container restart..."
+
+if docker volume inspect "$RESERVE_JOB_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $RESERVE_JOB_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$RESERVE_JOB_PERSISTENCE_VOLUME" > /dev/null
+
+RESERVE_JOB_PORT=$(start_beanstalkd \
+    --name "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$RESERVE_JOB_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+setup_reserve_job_persistence() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def send_cmd(sock, cmd):
+    sock.sendall(cmd)
+    return read_line(sock)
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+# 1. Buried job -> reserve-job -> release with delay 0
+send_cmd(s, b"use t1\r\n")
+send_cmd(s, b"watch t1\r\n")
+send_cmd(s, b"ignore default\r\n")
+if send_cmd(s, b"put 0 0 0 5\r\njob01\r\n") != b"INSERTED 1\r\n":
+    raise SystemExit(1)
+if send_cmd(s, b"reserve\r\n") != b"RESERVED 1 5\r\n":
+    raise SystemExit(1)
+read_bytes(s, 7)
+if send_cmd(s, b"bury 1 0\r\n") != b"BURIED\r\n":
+    raise SystemExit(1)
+if send_cmd(s, b"reserve-job 1\r\n") != b"RESERVED 1 5\r\n":
+    raise SystemExit(1)
+read_bytes(s, 7)
+if send_cmd(s, b"release 1 0 0\r\n") != b"RELEASED\r\n":
+    raise SystemExit(1)
+
+# 2. Delayed job -> reserve-job -> release with delay 0
+send_cmd(s, b"use t2\r\n")
+send_cmd(s, b"watch t2\r\n")
+send_cmd(s, b"ignore t1\r\n")
+if send_cmd(s, b"put 0 3600 60 5\r\njob02\r\n") != b"INSERTED 2\r\n":
+    raise SystemExit(1)
+if send_cmd(s, b"reserve-job 2\r\n") != b"RESERVED 2 5\r\n":
+    raise SystemExit(1)
+read_bytes(s, 7)
+if send_cmd(s, b"release 2 0 0\r\n") != b"RELEASED\r\n":
+    raise SystemExit(1)
+
+# 3. Buried job -> reserve-job -> in-flight during restart
+send_cmd(s, b"use t3\r\n")
+send_cmd(s, b"watch t3\r\n")
+send_cmd(s, b"ignore t2\r\n")
+if send_cmd(s, b"put 0 0 0 5\r\njob03\r\n") != b"INSERTED 3\r\n":
+    raise SystemExit(1)
+if send_cmd(s, b"reserve\r\n") != b"RESERVED 3 5\r\n":
+    raise SystemExit(1)
+read_bytes(s, 7)
+if send_cmd(s, b"bury 3 0\r\n") != b"BURIED\r\n":
+    raise SystemExit(1)
+
+s_inflight = socket.create_connection(("localhost", port), timeout=5)
+s_inflight.settimeout(5)
+if send_cmd(s_inflight, b"reserve-job 3\r\n") != b"RESERVED 3 5\r\n":
+    raise SystemExit(1)
+read_bytes(s_inflight, 7)
+# Leave s_inflight open so job 3 is in-flight when container stops
+PY
+}
+
+if ! setup_reserve_job_persistence "$RESERVE_JOB_PORT"; then
+    report_container_failure "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
+        "failed setting up reserve-job persistence test jobs."
+    exit 1
+fi
+
+echo "Restarting persistent beanstalkd container for reserve-job check..."
+docker stop -t 15 "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" > /dev/null
+docker rm "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" > /dev/null
+RESERVE_JOB_PORT=$(start_beanstalkd \
+    --name "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$RESERVE_JOB_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+verify_reserve_job_persistence() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def send_cmd(sock, cmd):
+    sock.sendall(cmd)
+    return read_line(sock)
+
+failures = []
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+def peek_tube(sock, cmd):
+    r = send_cmd(sock, cmd)
+    if r.startswith(b"FOUND "):
+        parts = r.split()
+        size = int(parts[2])
+        read_bytes(sock, size + 2)
+    return r
+
+# Verify Job 1 (released from buried) recovered as Ready
+r = send_cmd(s, b"peek 1\r\n")
+if r != b"FOUND 1 5\r\n":
+    failures.append("job 1 peek returned %r (expected FOUND 1 5)" % r)
+else:
+    body = read_bytes(s, 7)
+    if body != b"job01\r\n":
+        failures.append("job 1 body returned %r (expected b'job01\\r\\n')" % body)
+    stats = send_cmd(s, b"stats-job 1\r\n")
+    if stats.startswith(b"OK "):
+        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        if "state: ready" not in stats_body:
+            failures.append("job 1 stats-job state is not ready: %s" % stats_body)
+
+# Verify Job 2 (released from delayed) recovered as Ready
+r = send_cmd(s, b"peek 2\r\n")
+if r != b"FOUND 2 5\r\n":
+    failures.append("job 2 peek returned %r (expected FOUND 2 5)" % r)
+else:
+    body = read_bytes(s, 7)
+    if body != b"job02\r\n":
+        failures.append("job 2 body returned %r (expected b'job02\\r\\n')" % body)
+    stats = send_cmd(s, b"stats-job 2\r\n")
+    if stats.startswith(b"OK "):
+        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        if "state: ready" not in stats_body:
+            failures.append("job 2 stats-job state is not ready: %s" % stats_body)
+
+# Verify Job 3 (in-flight when stopped) recovered as Ready
+r = send_cmd(s, b"peek 3\r\n")
+if r != b"FOUND 3 5\r\n":
+    failures.append("job 3 peek returned %r (expected FOUND 3 5)" % r)
+else:
+    body = read_bytes(s, 7)
+    if body != b"job03\r\n":
+        failures.append("job 3 body returned %r (expected b'job03\\r\\n')" % body)
+    stats = send_cmd(s, b"stats-job 3\r\n")
+    if stats.startswith(b"OK "):
+        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        if "state: ready" not in stats_body:
+            failures.append("job 3 stats-job state is not ready: %s" % stats_body)
+
+# Verify buried and delayed queues are empty
+for tube in [b"default", b"t1", b"t2", b"t3"]:
+    send_cmd(s, b"use " + tube + b"\r\n")
+    b = peek_tube(s, b"peek-buried\r\n")
+    if b != b"NOT_FOUND\r\n":
+        failures.append("tube %s peek-buried returned %r (expected NOT_FOUND)" % (tube.decode(), b))
+    d = peek_tube(s, b"peek-delayed\r\n")
+    if d != b"NOT_FOUND\r\n":
+        failures.append("tube %s peek-delayed returned %r (expected NOT_FOUND)" % (tube.decode(), d))
+
+if failures:
+    for f in failures:
+        print("reserve-job WAL persistence regression: " + f, file=sys.stderr)
+    raise SystemExit(2)
+PY
+}
+
+if ! verify_reserve_job_persistence "$RESERVE_JOB_PORT"; then
+    report_container_failure "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
+        "reserve-job persistence verification failed."
+    exit 1
+fi
+
+echo "PASS: jobs reserved via reserve-job persist across container restart."
+
