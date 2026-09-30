@@ -15,16 +15,21 @@
 # that is not exactly `quit\r\n` (issue #42). It also hangs in bit-bucket
 # mode for malformed `put` commands whose body size exceeds max-job-size,
 # waiting to discard a body the client never sends instead of returning
-# BAD_FORMAT (issue #48). No upstream release fixes these yet, so the
+# BAD_FORMAT (issue #48). It also reverts buried and delayed jobs reserved via
+# `reserve-job` back to buried or delayed upon restart when persistence is
+# enabled, because OP_RESERVE_JOB does not write the state transition to the
+# WAL (issue #61). No upstream release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
 # packaging-level patches (patches/kick-bound.patch,
 # patches/reserve-timeout-bound.patch, patches/split-buffer-hang.patch,
 # patches/pause-tube-delimiter.patch, patches/quit-prefix.patch,
-# patches/put-oversize-trailing-garbage.patch) that validate bounds, require
+# patches/put-oversize-trailing-garbage.patch,
+# patches/reserve-job-wal-persistence.patch) that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
-# prefixes, and reject malformed oversize puts before entering bit-bucket
-# mode. Everything else about the package (user, directories, runtime
-# dependencies) is unchanged; the patched binary replaces the package binary.
+# prefixes, reject malformed oversize puts before entering bit-bucket mode,
+# and persist reserve-job state transitions to the WAL. Everything else about
+# the package (user, directories, runtime dependencies) is unchanged; the
+# patched binary replaces the package binary.
 
 FROM alpine AS build
 

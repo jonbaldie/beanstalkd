@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Jobs reserved from the buried or delayed state via `reserve-job` now persist
+  their updated state to the Write-Ahead Log (WAL) when persistence is enabled
+  (`-b <wal_dir>`), preventing them from reverting back to `Buried` or `Delayed`
+  upon daemon restart or crash recovery (#61). The Alpine package's daemon (1.13)
+  still has this bug, as does upstream master, so the image now builds the daemon
+  from pinned upstream `v1.13` source plus `patches/reserve-job-wal-persistence.patch`,
+  which reserves WAL space and writes the job's transition to the WAL when
+  reserving from `Buried` or `Delayed`; the patched binary replaces the package
+  binary and everything else about the package is unchanged.
+- `test.sh` now asserts that buried and delayed jobs reserved via `reserve-job`
+  and returned to ready (or held in-flight during restart) persist across a
+  daemon restart on a persistent volume and recover as `Ready` (#61).
+
 ## [1.0.5] - 2026-09-23
 
 ### Changed
