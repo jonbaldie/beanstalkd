@@ -21,17 +21,22 @@
 # WAL (issue #61). It also reverts the priority and reserves/releases
 # counters of jobs released with delay 0 upon restart when persistence is
 # enabled, because OP_RELEASE only writes to the WAL for a nonzero delay
-# (issue #66). No upstream release fixes these yet, so the
+# (issue #66). It also adds one to the buries counter of every buried job on
+# each restart when persistence is enabled, because WAL replay restores buried
+# jobs through bury_job(), which counts a new bury (issue #67). No upstream
+# release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
 # packaging-level patches (patches/kick-bound.patch,
 # patches/reserve-timeout-bound.patch, patches/split-buffer-hang.patch,
 # patches/pause-tube-delimiter.patch, patches/quit-prefix.patch,
 # patches/put-oversize-trailing-garbage.patch,
 # patches/reserve-job-wal-persistence.patch,
-# patches/release-wal-persistence.patch) that validate bounds, require
+# patches/release-wal-persistence.patch,
+# patches/replay-bury-count.patch) that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
 # prefixes, reject malformed oversize puts before entering bit-bucket mode,
-# and persist reserve-job state transitions and delay-0 releases to the WAL.
+# persist reserve-job state transitions and delay-0 releases to the WAL, and
+# keep WAL replay from counting restored buried jobs as new buries.
 # Everything else about the package (user, directories, runtime dependencies)
 # is unchanged; the patched binary replaces the package binary.
 

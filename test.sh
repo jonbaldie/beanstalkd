@@ -32,6 +32,8 @@ RESERVE_JOB_PERSISTENCE_CONTAINER_NAME="beanstalkd-reserve-job-persistence-test-
 RESERVE_JOB_PERSISTENCE_VOLUME="beanstalkd-reserve-job-persistence-test-$RUN_ID"
 RELEASE_PERSISTENCE_CONTAINER_NAME="beanstalkd-release-persistence-test-$RUN_ID"
 RELEASE_PERSISTENCE_VOLUME="beanstalkd-release-persistence-test-$RUN_ID"
+BURY_REPLAY_CONTAINER_NAME="beanstalkd-bury-replay-test-$RUN_ID"
+BURY_REPLAY_VOLUME="beanstalkd-bury-replay-test-$RUN_ID"
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -1520,3 +1522,124 @@ if [ "$RELEASE_STATS_AFTER" != "$EXPECTED_RELEASE_STATS" ]; then
 fi
 
 echo "PASS: release with delay 0 persists priority and counters across container restart."
+
+
+# ---- Test 17: restart does not count as a bury ----
+#
+# Regression for issue #67: When persistence is enabled (-b <dir>), prot_replay
+# restored each buried job from the WAL by calling bury_job(), which
+# unconditionally increments bury_ct. The WAL record already holds the true
+# bury count, so every restart reported one extra bury in stats-job.
+#
+# A job buried once must report buries: 1 after each restart.
+
+echo "Checking buried job bury count across container restarts..."
+
+if docker volume inspect "$BURY_REPLAY_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $BURY_REPLAY_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$BURY_REPLAY_VOLUME" > /dev/null
+
+BURY_REPLAY_PORT=$(start_beanstalkd \
+    --name "$BURY_REPLAY_CONTAINER_NAME" \
+    --volume "$BURY_REPLAY_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+# Prints the stats-job fields this check compares, one per line. With "setup",
+# first runs the put/reserve/bury sequence from the issue.
+bury_replay_stats() {
+    python3 - "$1" "$2" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def send_cmd(sock, cmd):
+    sock.sendall(cmd)
+    return read_line(sock)
+
+def expect(sock, cmd, want):
+    got = send_cmd(sock, cmd)
+    if got != want:
+        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
+        raise SystemExit(1)
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+if sys.argv[2] == "setup":
+    expect(s, b"put 0 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
+    expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
+    read_bytes(s, 7)
+    expect(s, b"bury 1 0\r\n", b"BURIED\r\n")
+
+stats = send_cmd(s, b"stats-job 1\r\n")
+if not stats.startswith(b"OK "):
+    print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
+    raise SystemExit(1)
+stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+for line in stats_body.splitlines():
+    if line.split(":")[0] in ("state", "buries"):
+        print(line)
+PY
+}
+
+if ! BURY_REPLAY_STATS=$(bury_replay_stats "$BURY_REPLAY_PORT" setup); then
+    report_container_failure "$BURY_REPLAY_CONTAINER_NAME" \
+        "failed setting up bury replay test job."
+    exit 1
+fi
+
+EXPECTED_BURY_REPLAY_STATS="state: buried
+buries: 1"
+if [ "$BURY_REPLAY_STATS" != "$EXPECTED_BURY_REPLAY_STATS" ]; then
+    echo "FAIL: buried job stats before restart were:"
+    echo "$BURY_REPLAY_STATS"
+    echo "expected:"
+    echo "$EXPECTED_BURY_REPLAY_STATS"
+    exit 1
+fi
+
+for restart in 1 2; do
+    echo "Restarting persistent beanstalkd container for bury count check ($restart of 2)..."
+    docker stop -t 15 "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
+    docker rm "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
+    BURY_REPLAY_PORT=$(start_beanstalkd \
+        --name "$BURY_REPLAY_CONTAINER_NAME" \
+        --volume "$BURY_REPLAY_VOLUME:/data" \
+        beanstalkd -b /data -f 0)
+
+    if ! BURY_REPLAY_STATS=$(bury_replay_stats "$BURY_REPLAY_PORT" verify); then
+        report_container_failure "$BURY_REPLAY_CONTAINER_NAME" \
+            "failed reading buried job stats after restart."
+        exit 1
+    fi
+
+    if [ "$BURY_REPLAY_STATS" != "$EXPECTED_BURY_REPLAY_STATS" ]; then
+        echo "FAIL: bury count replay regression; job stats after restart $restart were:"
+        echo "$BURY_REPLAY_STATS"
+        echo "expected:"
+        echo "$EXPECTED_BURY_REPLAY_STATS"
+        exit 1
+    fi
+done
+
+echo "PASS: buried job keeps its bury count across container restarts."
