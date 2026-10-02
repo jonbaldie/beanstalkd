@@ -18,18 +18,22 @@
 # BAD_FORMAT (issue #48). It also reverts buried and delayed jobs reserved via
 # `reserve-job` back to buried or delayed upon restart when persistence is
 # enabled, because OP_RESERVE_JOB does not write the state transition to the
-# WAL (issue #61). No upstream release fixes these yet, so the
+# WAL (issue #61). It also reverts the priority and reserves/releases
+# counters of jobs released with delay 0 upon restart when persistence is
+# enabled, because OP_RELEASE only writes to the WAL for a nonzero delay
+# (issue #66). No upstream release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
 # packaging-level patches (patches/kick-bound.patch,
 # patches/reserve-timeout-bound.patch, patches/split-buffer-hang.patch,
 # patches/pause-tube-delimiter.patch, patches/quit-prefix.patch,
 # patches/put-oversize-trailing-garbage.patch,
-# patches/reserve-job-wal-persistence.patch) that validate bounds, require
+# patches/reserve-job-wal-persistence.patch,
+# patches/release-wal-persistence.patch) that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
 # prefixes, reject malformed oversize puts before entering bit-bucket mode,
-# and persist reserve-job state transitions to the WAL. Everything else about
-# the package (user, directories, runtime dependencies) is unchanged; the
-# patched binary replaces the package binary.
+# and persist reserve-job state transitions and delay-0 releases to the WAL.
+# Everything else about the package (user, directories, runtime dependencies)
+# is unchanged; the patched binary replaces the package binary.
 
 FROM alpine AS build
 

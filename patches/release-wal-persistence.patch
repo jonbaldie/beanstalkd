@@ -1,0 +1,48 @@
+Fix release WAL persistence for delay 0 (issue #66; upstream bug, unfixed in
+v1.13 and on master).
+
+When persistence is enabled (-b <dir>), `release <id> <pri> 0` applies the new
+priority and increments the release counter in memory, but OP_RELEASE only
+reserved WAL space and passed update_store = !!delay to enqueue_job(), so with
+delay 0 walwrite() was skipped entirely. The on-disk binlog kept the stale
+pre-release record, and on daemon restart prot_replay restored the job with
+its original priority and its reserves and releases counters reset to 0.
+
+Always reserve WAL space via walresvupdate(&c->srv->wal) and always pass
+update_store = 1 to enqueue_job(), so every release writes the updated job
+record (priority, counters, state, and delay deadline) to the WAL, as bury
+already does.
+
+--- a/prot.c
++++ b/prot.c
+@@ -1579,22 +1579,20 @@
+             return;
+         }
+ 
+-        /* We want to update the delay deadline on disk, so reserve space for
+-         * that. */
+-        if (delay) {
+-            int z = walresvupdate(&c->srv->wal);
+-            if (!z) {
+-                reply_serr(c, MSG_OUT_OF_MEMORY);
+-                return;
+-            }
+-            j->walresv += z;
++        /* We want to update the priority, release count, and delay deadline
++         * on disk, so reserve space for that. */
++        int z = walresvupdate(&c->srv->wal);
++        if (!z) {
++            reply_serr(c, MSG_OUT_OF_MEMORY);
++            return;
+         }
++        j->walresv += z;
+ 
+         j->r.pri = pri;
+         j->r.delay = delay;
+         j->r.release_ct++;
+ 
+-        r = enqueue_job(c->srv, j, delay, !!delay);
++        r = enqueue_job(c->srv, j, delay, 1);
+         if (r < 0) {
+             reply_serr(c, MSG_INTERNAL_ERROR);
+             return;

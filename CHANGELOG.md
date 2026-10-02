@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Jobs released with delay 0 (`release <id> <pri> 0`) now persist their new
+  priority and their `reserves` and `releases` counters to the Write-Ahead Log
+  (WAL) when persistence is enabled (`-b <wal_dir>`), instead of reverting to
+  their pre-release priority and zeroed counters upon daemon restart (#66).
+  `OP_RELEASE` only wrote to the WAL for a nonzero delay; the Alpine package's
+  daemon (1.13) and upstream master still have this bug, so the image now also
+  applies `patches/release-wal-persistence.patch`, which writes every release
+  to the WAL.
+- `test.sh` now asserts that a job released with delay 0 keeps its new
+  priority and counters across a daemon restart on a persistent volume (#66).
+
 ## [1.0.6] - 2026-09-30
 
 ### Fixed

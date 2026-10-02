@@ -30,6 +30,8 @@ PERSISTENCE_VOLUME="beanstalkd-persistence-test-$RUN_ID"
 VOLUME_LEAK_CONTAINER_NAME="beanstalkd-volume-leak-test-$RUN_ID"
 RESERVE_JOB_PERSISTENCE_CONTAINER_NAME="beanstalkd-reserve-job-persistence-test-$RUN_ID"
 RESERVE_JOB_PERSISTENCE_VOLUME="beanstalkd-reserve-job-persistence-test-$RUN_ID"
+RELEASE_PERSISTENCE_CONTAINER_NAME="beanstalkd-release-persistence-test-$RUN_ID"
+RELEASE_PERSISTENCE_VOLUME="beanstalkd-release-persistence-test-$RUN_ID"
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -1395,3 +1397,126 @@ fi
 
 echo "PASS: jobs reserved via reserve-job persist across container restart."
 
+
+# ---- Test 16: release with delay 0 persists priority and counters ----
+#
+# Regression for issue #66: When persistence is enabled (-b <dir>), releasing
+# a reserved job with `release <id> <pri> 0` applied the new priority and
+# bumped the release counter in memory, but OP_RELEASE only wrote to the WAL
+# when the delay was nonzero. On container restart, prot_replay restored the
+# stale pre-release record, so the job reverted to its original priority and
+# its reserves and releases counters reverted to 0.
+#
+# A job released with delay 0 must persist its new priority and counters to
+# the WAL so that on restart, stats-job reports them unchanged.
+
+echo "Checking release with delay 0 WAL persistence across container restart..."
+
+if docker volume inspect "$RELEASE_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $RELEASE_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$RELEASE_PERSISTENCE_VOLUME" > /dev/null
+
+RELEASE_PORT=$(start_beanstalkd \
+    --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$RELEASE_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+# Prints the stats-job fields this check compares, one per line. With "setup",
+# first runs the put/reserve/release sequence from the issue.
+release_persistence_stats() {
+    python3 - "$1" "$2" <<'PY'
+import socket
+import sys
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def send_cmd(sock, cmd):
+    sock.sendall(cmd)
+    return read_line(sock)
+
+def expect(sock, cmd, want):
+    got = send_cmd(sock, cmd)
+    if got != want:
+        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
+        raise SystemExit(1)
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+if sys.argv[2] == "setup":
+    expect(s, b"put 100 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
+    expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
+    read_bytes(s, 7)
+    expect(s, b"release 1 10 0\r\n", b"RELEASED\r\n")
+
+stats = send_cmd(s, b"stats-job 1\r\n")
+if not stats.startswith(b"OK "):
+    print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
+    raise SystemExit(1)
+stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+for line in stats_body.splitlines():
+    if line.split(":")[0] in ("state", "pri", "reserves", "releases"):
+        print(line)
+PY
+}
+
+if ! RELEASE_STATS_BEFORE=$(release_persistence_stats "$RELEASE_PORT" setup); then
+    report_container_failure "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
+        "failed setting up release persistence test job."
+    exit 1
+fi
+
+EXPECTED_RELEASE_STATS="state: ready
+pri: 10
+reserves: 1
+releases: 1"
+if [ "$RELEASE_STATS_BEFORE" != "$EXPECTED_RELEASE_STATS" ]; then
+    echo "FAIL: released job stats before restart were:"
+    echo "$RELEASE_STATS_BEFORE"
+    echo "expected:"
+    echo "$EXPECTED_RELEASE_STATS"
+    exit 1
+fi
+
+echo "Restarting persistent beanstalkd container for release check..."
+docker stop -t 15 "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
+docker rm "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
+RELEASE_PORT=$(start_beanstalkd \
+    --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$RELEASE_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+if ! RELEASE_STATS_AFTER=$(release_persistence_stats "$RELEASE_PORT" verify); then
+    report_container_failure "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
+        "failed reading released job stats after restart."
+    exit 1
+fi
+
+if [ "$RELEASE_STATS_AFTER" != "$EXPECTED_RELEASE_STATS" ]; then
+    echo "FAIL: release with delay 0 WAL persistence regression; job stats after restart were:"
+    echo "$RELEASE_STATS_AFTER"
+    echo "expected:"
+    echo "$EXPECTED_RELEASE_STATS"
+    exit 1
+fi
+
+echo "PASS: release with delay 0 persists priority and counters across container restart."
