@@ -1,0 +1,26 @@
+Fix bury count inflation on WAL replay (issue #67; upstream bug, unfixed in
+v1.13 and on master).
+
+When persistence is enabled (-b <dir>), prot_replay restores each buried job
+from the WAL by calling bury_job(), which unconditionally increments
+j->r.bury_ct. readrec() has already restored the job's true bury count from
+the WAL record, so every daemon restart reported one extra bury in stats-job.
+
+Preserve the recovered bury count across the bury_job() call during replay.
+bury_job() is left unchanged because its other update_store = 0 callers
+(out-of-memory buries) are real buries that must still be counted.
+
+--- a/prot.c
++++ b/prot.c
+@@ -2352,7 +2352,11 @@
+         int64 delay = 0;
+         switch (j->r.state) {
+         case Buried: {
++            /* The WAL record already holds the job's bury count; restoring
++             * it is not a new bury. */
++            uint32 bury_ct = j->r.bury_ct;
+             bury_job(s, j, 0);
++            j->r.bury_ct = bury_ct;
+             break;
+         }
+         case Delayed:

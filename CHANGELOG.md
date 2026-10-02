@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the WAL.
 - `test.sh` now asserts that a job released with delay 0 keeps its new
   priority and counters across a daemon restart on a persistent volume (#66).
+- Buried jobs no longer gain an extra `buries` count in `stats-job` on every
+  daemon restart when persistence is enabled (`-b <wal_dir>`) (#67). WAL
+  replay restored buried jobs through `bury_job()`, which counts a new bury on
+  top of the count already read from the WAL; the Alpine package's daemon
+  (1.13) and upstream master still have this bug, so the image now also
+  applies `patches/replay-bury-count.patch`, which keeps the recovered count.
+- `test.sh` now asserts that a job buried once still reports `buries: 1` after
+  two daemon restarts on a persistent volume (#67).
 
 ## [1.0.6] - 2026-09-30
 
