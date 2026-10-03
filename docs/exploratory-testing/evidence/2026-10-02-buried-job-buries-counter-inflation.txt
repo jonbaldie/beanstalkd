@@ -1,0 +1,98 @@
+Exploratory evidence: beanstalkd increments buried job buries counter on every daemon restart
+=============================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 74bec79 (release/v1.0.6)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Each trial used a fresh container on a random loopback-only host port with a dedicated named volume and fsync enabled (-f 0).
+
+Reproduction
+------------
+The following test was executed across three consecutive clean instances:
+
+--- Running Trial 1 ---
+1. Producer put job: INSERTED 1 (pri 0, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 bury job: bury 1 0 -> BURIED
+4. Before restart stats-job 1:
+   buries: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   buries: 2
+Trial 1 PASS: Bug reproduced cleanly (buries inflated 1 -> 2 across daemon restart).
+
+--- Running Trial 2 ---
+1. Producer put job: INSERTED 1 (pri 0, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 bury job: bury 1 0 -> BURIED
+4. Before restart stats-job 1:
+   buries: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   buries: 2
+Trial 2 PASS: Bug reproduced cleanly (buries inflated 1 -> 2 across daemon restart).
+
+--- Running Trial 3 ---
+1. Producer put job: INSERTED 1 (pri 0, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 bury job: bury 1 0 -> BURIED
+4. Before restart stats-job 1:
+   buries: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   buries: 2
+Trial 3 PASS: Bug reproduced cleanly (buries inflated 1 -> 2 across daemon restart).
+
+Expected behavior
+-----------------
+Per doc/protocol.txt:
+```
+ - "buries" is the number of times this job has been buried.
+```
+A job buried once by a client has been buried exactly once. Restarting the daemon is a maintenance event or crash recovery, not a client bury operation. Across daemon restarts with persistence enabled (-b), the job's `buries` counter must remain 1.
+
+Actual behavior
+---------------
+Before restart, `stats-job 1` reports `buries: 1`. After daemon restart, `stats-job 1` reports `buries: 2`. Every daemon restart increments the job's `buries` counter by 1 above the actual number of client bury actions.
+
+Root cause
+----------
+In `prot.c`, `prot_replay()` recovers jobs stored in the Write-Ahead Log during daemon startup:
+```c
+        switch (j->r.state) {
+        case Buried: {
+            bury_job(s, j, 0);
+            break;
+        }
+```
+However, `bury_job()` unconditionally increments `j->r.bury_ct` on line 560:
+```c
+static int
+bury_job(Server *s, Job *j, char update_store)
+{
+    if (update_store) {
+        int z = walresvupdate(&s->wal);
+        if (!z)
+            return 0;
+        j->walresv += z;
+    }
+
+    job_list_insert(&j->tube->buried, j);
+    global_stat.buried_ct++;
+    j->tube->stat.buried_ct++;
+    j->r.state = Buried;
+    j->reserver = NULL;
+    j->r.bury_ct++;
+
+    if (update_store) {
+...
+```
+When `prot_replay()` runs, `readrec()` in `file.c` has already read the job record from disk and restored `j->r = jr`, which already contains the true `bury_ct` (e.g. 1). Calling `bury_job(s, j, 0)` unconditionally executes `j->r.bury_ct++`, adding an erroneous extra increment during startup replay.
+
+References
+----------
+- https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L351-L368

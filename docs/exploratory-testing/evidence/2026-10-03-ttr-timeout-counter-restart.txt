@@ -1,0 +1,140 @@
+# 2026-10-03 — TTR timeout counter lost across restart
+# Image: jonbaldie/beanstalkd:latest built from origin/master 0fb5366; Docker 29.4.0 (OrbStack, aarch64)
+# Daemon: beanstalkd -p 11300 -b /data -f 0, fresh named volume per replay, container stopped (docker stop -t 5) and recreated on the same volume.
+# Job 1: TTR expires during reservation. Job 2 (control): reserve, bury, kick-job — persisted counters.
+# Replay script:
+#   #!/bin/sh
+#   # Replay: TTR timeout counter lost across restart. Usage: ./replay-timeout.sh <run-tag>
+#   set -e; cd "$(dirname "$0")"; . ./lib.sh
+#   N=bt-to-$1; docker volume create --label $LBL $N >/dev/null
+#   P=$(start $N $N -f 0)
+#   python3 - $P <<'PY'
+#   import sys,time; sys.path.insert(0,'.'); from bs import *
+#   p=int(sys.argv[1]); wait(p); c=C(p)
+#   c.cmd("put 0 0 1 3", b"ttr"); c.cmd("put 0 0 60 3", b"bur")
+#   w=C(p); w.cmd("reserve-job 1"); time.sleep(2.5); w.close()
+#   w=C(p); w.cmd("reserve-job 2"); w.cmd("bury 2 0"); w.cmd("kick-job 2")
+#   for i in (1,2): c.cmd(f"stats-job {i}")
+#   PY
+#   docker stop -t 5 $N >/dev/null; docker rm $N >/dev/null
+#   echo "== restart container on same volume"
+#   P=$(start $N $N -f 0)
+#   python3 - $P <<'PY'
+#   import sys; sys.path.insert(0,'.'); from bs import *
+#   p=int(sys.argv[1]); wait(p); c=C(p)
+#   for i in (1,2): c.cmd(f"stats-job {i}")
+#   PY
+#   docker rm -f $N >/dev/null; docker volume rm $N >/dev/null
+
+##### replay 1
+>> put 0 0 1 3  [body 3]
+<< INSERTED 1
+>> put 0 0 60 3  [body 3]
+<< INSERTED 2
+>> reserve-job 1
+<< RESERVED 1 3
+ttr
+>> reserve-job 2
+<< RESERVED 2 3
+bur
+>> bury 2 0
+<< BURIED
+>> kick-job 2
+<< KICKED
+>> stats-job 1
+<< OK 145
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 1
+releases: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 0
+releases: 0
+kicks: 1
+
+== restart container on same volume
+>> stats-job 1
+<< OK 145
+---
+state: ready
+pri: 0
+reserves: 0
+timeouts: 0
+releases: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 0
+releases: 0
+kicks: 1
+
+##### replay 2
+>> put 0 0 1 3  [body 3]
+<< INSERTED 1
+>> put 0 0 60 3  [body 3]
+<< INSERTED 2
+>> reserve-job 1
+<< RESERVED 1 3
+ttr
+>> reserve-job 2
+<< RESERVED 2 3
+bur
+>> bury 2 0
+<< BURIED
+>> kick-job 2
+<< KICKED
+>> stats-job 1
+<< OK 145
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 1
+releases: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 0
+releases: 0
+kicks: 1
+
+== restart container on same volume
+>> stats-job 1
+<< OK 145
+---
+state: ready
+pri: 0
+reserves: 0
+timeouts: 0
+releases: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+state: ready
+pri: 0
+reserves: 1
+timeouts: 0
+releases: 0
+kicks: 1
+
