@@ -1,0 +1,123 @@
+Exploratory evidence: beanstalkd reverts job priority and release counters to stale pre-release values upon restart when released with delay 0
+=================================================================================================================================================
+
+Environment
+-----------
+Repository: jonbaldie/beanstalkd at commit 74bec79 (release/v1.0.6)
+Image: jonbaldie/beanstalkd:latest, rebuilt with make test
+Beanstalkd reported by stats: version 1.13
+Docker Server: 29.4.0 (OrbStack, aarch64)
+
+Each trial used a fresh container on a random loopback-only host port with a dedicated named volume and fsync enabled (-f 0).
+
+Reproduction
+------------
+The following test was executed across three consecutive clean instances:
+
+--- Running Trial 1 ---
+1. Producer put job: INSERTED 1 (pri 100, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 release with delay 0 and new priority 10: release 1 10 0 -> RELEASED
+4. Before restart stats-job 1:
+   state: ready
+   pri: 10
+   reserves: 1
+   releases: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   state: ready
+   pri: 100
+   reserves: 0
+   releases: 0
+Trial 1 PASS: Bug reproduced cleanly (pri reverted 10 -> 100, releases reverted 1 -> 0, reserves reverted 1 -> 0).
+
+--- Running Trial 2 ---
+1. Producer put job: INSERTED 1 (pri 100, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 release with delay 0 and new priority 10: release 1 10 0 -> RELEASED
+4. Before restart stats-job 1:
+   state: ready
+   pri: 10
+   reserves: 1
+   releases: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   state: ready
+   pri: 100
+   reserves: 0
+   releases: 0
+Trial 2 PASS: Bug reproduced cleanly (pri reverted 10 -> 100, releases reverted 1 -> 0, reserves reverted 1 -> 0).
+
+--- Running Trial 3 ---
+1. Producer put job: INSERTED 1 (pri 100, delay 0, ttr 1, body "hello")
+2. Worker 1 reserve: RESERVED 1 5
+3. Worker 1 release with delay 0 and new priority 10: release 1 10 0 -> RELEASED
+4. Before restart stats-job 1:
+   state: ready
+   pri: 10
+   reserves: 1
+   releases: 1
+5. Restart beanstalkd container with the same persistence volume (-b /data -f 0).
+6. After restart stats-job 1:
+   state: ready
+   pri: 100
+   reserves: 0
+   releases: 0
+Trial 3 PASS: Bug reproduced cleanly (pri reverted 10 -> 100, releases reverted 1 -> 0, reserves reverted 1 -> 0).
+
+Expected behavior
+-----------------
+Per doc/protocol.txt:
+```
+    release <id> <pri> <delay>\r\n
+
+ - <id> is the job id to release.
+ - <pri> is a new priority to assign to the job.
+ - <delay> is an integer number of seconds to wait before putting the job in
+   the ready queue. The job will be in the "delayed" state during this time.
+```
+When a worker releases a job with a new priority (e.g. reprioritizing an urgent retry with priority 10), the new priority and updated release counters must persist across daemon restarts when persistence (-b) is enabled.
+
+Actual behavior
+---------------
+In memory, the job immediately adopts priority 10 and increments release_ct. However, because delay is 0, beanstalkd bypasses walwrite(). The WAL on disk continues to record the original priority (100) and 0 releases.
+
+Upon restart, prot_replay() replays the stale binlog record and restores the job to the ready queue with priority 100, losing the worker's priority assignment and wiping out the reservation and release statistics.
+
+Root cause
+----------
+In `prot.c`, `dispatch_cmd()` handles `OP_RELEASE`:
+```c
+        /* We want to update the delay deadline on disk, so reserve space for
+         * that. */
+        if (delay) {
+            int z = walresvupdate(&c->srv->wal);
+            if (!z) {
+                reply_serr(c, MSG_OUT_OF_MEMORY);
+                return;
+            }
+            j->walresv += z;
+        }
+
+        j->r.pri = pri;
+        j->r.delay = delay;
+        j->r.release_ct++;
+
+        r = enqueue_job(c->srv, j, delay, !!delay);
+```
+1. `walresvupdate(&c->srv->wal)` is only called if `delay != 0`.
+2. `enqueue_job(c->srv, j, delay, !!delay)` passes `update_store = !!delay`. When `delay == 0`, `update_store` is 0.
+3. In `enqueue_job`:
+```c
+    if (update_store) {
+        if (!walwrite(&s->wal, j)) {
+            return 0;
+        }
+        walmaint(&s->wal);
+    }
+```
+Because `update_store` is 0, `walwrite()` is never called when `delay == 0`. The on-disk binlog retains the obsolete pre-release record.
+
+References
+----------
+- https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt#L206-L225

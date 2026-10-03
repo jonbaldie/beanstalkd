@@ -1,0 +1,217 @@
+# 2026-10-03 — delayed job, kick-job and tube kick of delayed jobs across restart (no bug)
+>> put 5 10 30 2  [body 2]
+<< INSERTED 1
+>> put 5 2 30 2  [body 2]
+<< INSERTED 2
+>> put 5 30 30 2  [body 2]
+<< INSERTED 3
+>> kick-job 3
+<< KICKED
+>> use other
+<< USING other
+>> put 5 30 30 2  [body 2]
+<< INSERTED 4
+>> kick 1
+<< KICKED 1
+>> stats-job 1
+<< OK 149
+---
+id: 1
+tube: "default"
+state: delayed
+pri: 5
+age: 3
+delay: 10
+ttr: 30
+time-left: 6
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+id: 2
+tube: "default"
+state: ready
+pri: 5
+age: 3
+delay: 2
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats-job 3
+<< OK 147
+---
+id: 3
+tube: "default"
+state: ready
+pri: 5
+age: 3
+delay: 30
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+
+>> stats-job 4
+<< OK 145
+---
+id: 4
+tube: "other"
+state: ready
+pri: 5
+age: 3
+delay: 30
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+
+== restart
+>> stats-job 1
+<< OK 149
+---
+id: 1
+tube: "default"
+state: delayed
+pri: 5
+age: 5
+delay: 10
+ttr: 30
+time-left: 4
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 146
+---
+id: 2
+tube: "default"
+state: ready
+pri: 5
+age: 5
+delay: 2
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats-job 3
+<< OK 147
+---
+id: 3
+tube: "default"
+state: ready
+pri: 5
+age: 5
+delay: 30
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+
+>> stats-job 4
+<< OK 145
+---
+id: 4
+tube: "other"
+state: ready
+pri: 5
+age: 5
+delay: 30
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+
+>> stats-tube default
+<< OK 267
+---
+name: "default"
+current-jobs-urgent: 2
+current-jobs-ready: 2
+current-jobs-reserved: 0
+current-jobs-delayed: 1
+current-jobs-buried: 0
+total-jobs: 0
+current-using: 1
+current-watching: 1
+current-waiting: 0
+cmd-delete: 0
+cmd-pause-tube: 0
+pause: 0
+pause-time-left: 0
+
+>> stats-tube other
+<< OK 265
+---
+name: "other"
+current-jobs-urgent: 1
+current-jobs-ready: 1
+current-jobs-reserved: 0
+current-jobs-delayed: 0
+current-jobs-buried: 0
+total-jobs: 0
+current-using: 0
+current-watching: 0
+current-waiting: 0
+cmd-delete: 0
+cmd-pause-tube: 0
+pause: 0
+pause-time-left: 0
+
+>> stats-job 1
+<< OK 148
+---
+id: 1
+tube: "default"
+state: ready
+pri: 5
+age: 11
+delay: 10
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> reserve-with-timeout 0
+<< RESERVED 1 2
+d1

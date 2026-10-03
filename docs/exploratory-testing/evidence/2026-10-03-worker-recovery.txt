@@ -1,0 +1,193 @@
+# 2026-10-03 — worker failure recovery (TTR expiry, disconnect), TTR minimum, touch, DEADLINE_SOON
+>> put 50 0 1 4  [body 4]
+<< INSERTED 1
+>> put 60 0 30 4  [body 4]
+<< INSERTED 2
+>> reserve-with-timeout 0
+<< RESERVED 1 4
+ttr1
+>> stats-job 1
+<< OK 146
+---
+id: 1
+tube: "default"
+state: ready
+pri: 50
+age: 2
+delay: 0
+ttr: 1
+time-left: 0
+file: 1
+reserves: 1
+timeouts: 1
+releases: 0
+buries: 0
+kicks: 0
+
+>> reserve-with-timeout 0
+<< RESERVED 1 4
+ttr1
+>> stats-job 2
+<< OK 147
+---
+id: 2
+tube: "default"
+state: ready
+pri: 60
+age: 3
+delay: 0
+ttr: 30
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats
+<< OK 987
+---
+current-jobs-urgent: 2
+current-jobs-ready: 2
+current-jobs-reserved: 0
+current-jobs-delayed: 0
+current-jobs-buried: 0
+cmd-put: 2
+cmd-peek: 0
+cmd-peek-ready: 0
+cmd-peek-delayed: 0
+cmd-peek-buried: 0
+cmd-reserve: 0
+cmd-reserve-with-timeout: 2
+cmd-delete: 0
+cmd-release: 0
+cmd-use: 0
+cmd-watch: 0
+cmd-ignore: 0
+cmd-bury: 0
+cmd-kick: 0
+cmd-touch: 0
+cmd-stats: 1
+cmd-stats-job: 2
+cmd-stats-tube: 0
+cmd-list-tubes: 1
+cmd-list-tube-used: 0
+cmd-list-tubes-watched: 0
+cmd-pause-tube: 0
+job-timeouts: 1
+total-jobs: 2
+max-job-size: 65535
+current-tubes: 1
+current-connections: 2
+current-producers: 1
+current-workers: 1
+current-waiting: 0
+total-connections: 4
+pid: 1
+version: "1.13"
+rusage-utime: 0.007535
+rusage-stime: 0.026375
+uptime: 3
+binlog-oldest-index: 1
+binlog-current-index: 1
+binlog-records-migrated: 0
+binlog-records-written: 2
+binlog-max-size: 10485760
+draining: false
+id: 68fbacac15f6457a
+hostname: "1e6a369ad6ec"
+os: "#1 SMP PREEMPT Fri Aug  7 03:48:40 UTC 2026"
+platform: "aarch64"
+
+>> stats-job 1
+state: ready
+pri: 50
+reserves: 2
+timeouts: 1
+releases: 0
+>> stats-job 2
+state: ready
+pri: 60
+reserves: 0
+timeouts: 0
+releases: 0
+>> put 0 0 0 1  [body 1]
+<< INSERTED 1
+>> stats-job 1
+<< OK 145
+---
+id: 1
+tube: "default"
+state: ready
+pri: 0
+age: 0
+delay: 0
+ttr: 1
+time-left: 0
+file: 1
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> put 0 0 2 1  [body 1]
+<< INSERTED 2
+>> reserve-job 2
+<< RESERVED 2 1
+b
+>> reserve-with-timeout 5
+<< RESERVED 1 1
+a
+>> touch 2
+<< TOUCHED
+>> stats-job 2
+<< OK 148
+---
+id: 2
+tube: "default"
+state: reserved
+pri: 0
+age: 1
+delay: 0
+ttr: 2
+time-left: 1
+file: 1
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> stats-job 2
+<< OK 148
+---
+id: 2
+tube: "default"
+state: reserved
+pri: 0
+age: 2
+delay: 0
+ttr: 2
+time-left: 0
+file: 1
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+
+>> delete 2
+<< DELETED
+>> delete 1
+<< DELETED
+>> put 0 0 2 1  [body 1]
+<< INSERTED 3
+>> reserve
+<< RESERVED 3 1
+c
+>> reserve-with-timeout 5
+<< DEADLINE_SOON
+>> delete 3
+<< DELETED

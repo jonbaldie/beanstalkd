@@ -3,6 +3,11 @@
 These reports record user-facing journeys exercised against the packaged
 beanstalkd image and link to replay evidence.
 
+- [2026-10-03 AFK pass](2026-10-03-beanstalkd-afk.md) — worker failure
+  recovery and TTR timeout counter persistence (#70), delayed jobs across
+  restart, drain mode.
+- [2026-10-02 AFK pass](2026-10-02-beanstalkd-afk.md) — protocol command
+  fuzzing, zero-delay release WAL persistence, and buried counter replay.
 - [2026-09-30 AFK pass](2026-09-30-beanstalkd-afk.md) — protocol boundary
   fuzzing, reserve-job WAL persistence recovery, and stats counter coverage.
 - [2026-09-26 AFK pass](2026-09-26-beanstalkd-afk.md) — multi-tube work,
