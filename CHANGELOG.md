@@ -26,6 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies `patches/replay-bury-count.patch`, which keeps the recovered count.
 - `test.sh` now asserts that a job buried once still reports `buries: 1` after
   two daemon restarts on a persistent volume (#67).
+- Jobs whose reservation timed out (TTR expired) now keep their `timeouts` and
+  `reserves` counters in `stats-job` across a daemon restart when persistence
+  is enabled (`-b <wal_dir>`), instead of reverting to 0 (#70).
+  `conn_timeout()` returned the job to the ready queue without writing the
+  WAL; the Alpine package's daemon (1.13) and upstream master still have this
+  bug, so the image now also applies
+  `patches/ttr-timeout-wal-persistence.patch`, which writes the updated job
+  record to the WAL on TTR expiry.
+- `test.sh` now asserts that a job whose TTR expired once still reports
+  `reserves: 1` and `timeouts: 1` after a daemon restart on a persistent
+  volume (#70).
 
 ## [1.0.6] - 2026-09-30
 

@@ -34,6 +34,8 @@ RELEASE_PERSISTENCE_CONTAINER_NAME="beanstalkd-release-persistence-test-$RUN_ID"
 RELEASE_PERSISTENCE_VOLUME="beanstalkd-release-persistence-test-$RUN_ID"
 BURY_REPLAY_CONTAINER_NAME="beanstalkd-bury-replay-test-$RUN_ID"
 BURY_REPLAY_VOLUME="beanstalkd-bury-replay-test-$RUN_ID"
+TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME="beanstalkd-ttr-timeout-persistence-test-$RUN_ID"
+TTR_TIMEOUT_PERSISTENCE_VOLUME="beanstalkd-ttr-timeout-persistence-test-$RUN_ID"
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -1643,3 +1645,141 @@ for restart in 1 2; do
 done
 
 echo "PASS: buried job keeps its bury count across container restarts."
+
+
+# ---- Test 18: TTR expiry persists the timeout counter ----
+#
+# Regression for issue #70: When persistence is enabled (-b <dir>), a job whose
+# TTR expired had its timeouts counter incremented in memory, but conn_timeout()
+# returned it to the ready queue without writing the WAL. After a restart,
+# replay loaded the job's put record and stats-job reported timeouts: 0 and
+# reserves: 0.
+#
+# A job whose reservation timed out once must report reserves: 1 and
+# timeouts: 1 after a restart.
+
+echo "Checking TTR timeout counter across container restart..."
+
+if docker volume inspect "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $TTR_TIMEOUT_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null
+
+TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
+    --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$TTR_TIMEOUT_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+# Prints the stats-job fields this check compares, one per line. With "setup",
+# first puts a job with TTR 1, reserves it, and lets the reservation expire.
+ttr_timeout_stats() {
+    python3 - "$1" "$2" <<'PY'
+import socket
+import sys
+import time
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def send_cmd(sock, cmd):
+    sock.sendall(cmd)
+    return read_line(sock)
+
+def expect(sock, cmd, want):
+    got = send_cmd(sock, cmd)
+    if got != want:
+        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
+        raise SystemExit(1)
+
+def job_stats(sock):
+    stats = send_cmd(sock, b"stats-job 1\r\n")
+    if not stats.startswith(b"OK "):
+        print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
+        raise SystemExit(1)
+    stats_body = read_bytes(sock, int(stats.split()[1]) + 2).decode()
+    return dict(
+        line.split(": ", 1) for line in stats_body.splitlines() if ": " in line
+    )
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+if sys.argv[2] == "setup":
+    expect(s, b"put 0 0 1 3\r\nttr\r\n", b"INSERTED 1\r\n")
+    worker = socket.create_connection(("localhost", port), timeout=5)
+    worker.settimeout(5)
+    expect(worker, b"reserve\r\n", b"RESERVED 1 3\r\n")
+    read_bytes(worker, 5)
+    # Keep the worker connected without deleting or releasing, so the job
+    # returns to ready through TTR expiry rather than through disconnection.
+    deadline = time.time() + 10
+    while job_stats(s)["state"] != "ready":
+        if time.time() > deadline:
+            print("job 1 was not returned to ready after its TTR expired", file=sys.stderr)
+            raise SystemExit(1)
+        time.sleep(0.2)
+    worker.close()
+
+stats = job_stats(s)
+for field in ("state", "reserves", "timeouts"):
+    print("%s: %s" % (field, stats[field]))
+PY
+}
+
+if ! TTR_TIMEOUT_STATS=$(ttr_timeout_stats "$TTR_TIMEOUT_PERSISTENCE_PORT" setup); then
+    report_container_failure "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
+        "failed setting up TTR timeout test job."
+    exit 1
+fi
+
+EXPECTED_TTR_TIMEOUT_STATS="state: ready
+reserves: 1
+timeouts: 1"
+if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
+    echo "FAIL: timed-out job stats before restart were:"
+    echo "$TTR_TIMEOUT_STATS"
+    echo "expected:"
+    echo "$EXPECTED_TTR_TIMEOUT_STATS"
+    exit 1
+fi
+
+echo "Restarting persistent beanstalkd container for TTR timeout check..."
+docker stop -t 15 "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
+docker rm "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
+TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
+    --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
+    --volume "$TTR_TIMEOUT_PERSISTENCE_VOLUME:/data" \
+    beanstalkd -b /data -f 0)
+
+if ! TTR_TIMEOUT_STATS=$(ttr_timeout_stats "$TTR_TIMEOUT_PERSISTENCE_PORT" verify); then
+    report_container_failure "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
+        "failed reading timed-out job stats after restart."
+    exit 1
+fi
+
+if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
+    echo "FAIL: TTR timeout persistence regression; job stats after restart were:"
+    echo "$TTR_TIMEOUT_STATS"
+    echo "expected:"
+    echo "$EXPECTED_TTR_TIMEOUT_STATS"
+    exit 1
+fi
+
+echo "PASS: TTR expiry persists the timeout counter across container restart."

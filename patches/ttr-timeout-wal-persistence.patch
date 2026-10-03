@@ -1,0 +1,47 @@
+Fix TTR-expiry WAL persistence (issue #70; upstream bug, unfixed in v1.13 and
+on master).
+
+When persistence is enabled (-b <dir>), a job whose reservation times out
+(TTR expires) has its timeout counter incremented in memory, but conn_timeout()
+returned it to the ready queue with enqueue_job(..., update_store = 0), so
+walwrite() was skipped. The on-disk binlog kept the job's previous record
+(typically the one written by `put`), and on daemon restart prot_replay
+restored the job with its timeouts and reserves counters reset.
+
+Reserve WAL space via walresvupdate(&c->srv->wal) before touching the job and,
+once the job is back in the ready queue, write the updated record with
+walwrite() and walmaint(). The write happens after enqueue_job() rather than
+through update_store = 1 because enqueue_job() also returns 0 when walwrite()
+fails, and conn_timeout() would then bury a job already in the ready heap. If
+no WAL space can be reserved the job is still requeued, as before, and only
+its on-disk counters go stale.
+
+--- a/prot.c
++++ b/prot.c
+@@ -1902,12 +1902,25 @@
+         if (j == c->out_job) {
+             c->out_job = job_copy(c->out_job);
+         }
++
++        /* We want to update the timeout count on disk, so reserve space for
++         * that. If none is available, still return the job to the ready
++         * queue; only the on-disk counters go stale. */
++        int z = walresvupdate(&c->srv->wal);
++        j->walresv += z;
+ 
+         timeout_ct++; /* stats */
+         j->r.timeout_ct++;
+         int r = enqueue_job(c->srv, remove_this_reserved_job(c, j), 0, 0);
+-        if (r < 1)
++        if (r < 1) {
+             bury_job(c->srv, j, 0); /* out of memory, so bury it */
++        } else if (z) {
++            /* Written after the job is requeued: enqueue_job() also returns 0
++             * when walwrite() fails, which would bury a job already in the
++             * ready heap. */
++            walwrite(&c->srv->wal, j);
++            walmaint(&c->srv->wal);
++        }
+         connsched(c);
+     }
+ 
