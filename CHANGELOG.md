@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `test.sh` now asserts that a job whose TTR expired once still reports
   `reserves: 1` and `timeouts: 1` after a daemon restart on a persistent
   volume (#70).
+- Jobs whose TTR expires while their worker stays connected no longer
+  intermittently stay `reserved` forever, with a negative `time-left` (#76).
+  When the daemon checked the job at exactly its deadline, `conn_timeout()`
+  treated it as not yet expired and never rescheduled the connection; the
+  Alpine package's daemon (1.13) and upstream master still have this bug, so
+  the image now also applies `patches/ttr-expiry-tick-boundary.patch`, which
+  expires a job once its deadline is reached.
 
 ## [1.0.6] - 2026-09-30
 
