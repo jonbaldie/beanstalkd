@@ -26,7 +26,10 @@
 # jobs through bury_job(), which counts a new bury (issue #67). It also resets
 # the timeouts and reserves counters of jobs whose TTR expired upon restart
 # when persistence is enabled, because conn_timeout() returns the job to the
-# ready queue without writing the WAL (issue #70). No upstream
+# ready queue without writing the WAL (issue #70). It also intermittently
+# leaves a job reserved forever after its TTR expires, because conn_timeout()
+# skips a job whose deadline equals the current microsecond and then never
+# reschedules the connection (issue #76). No upstream
 # release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
 # packaging-level patches (patches/kick-bound.patch,
@@ -36,11 +39,12 @@
 # patches/reserve-job-wal-persistence.patch,
 # patches/release-wal-persistence.patch,
 # patches/replay-bury-count.patch,
+# patches/ttr-expiry-tick-boundary.patch,
 # patches/ttr-timeout-wal-persistence.patch) that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
 # prefixes, reject malformed oversize puts before entering bit-bucket mode,
 # persist reserve-job state transitions, delay-0 releases, and TTR expiries to
-# the WAL, and
+# the WAL, expire TTRs that reach their deadline exactly, and
 # keep WAL replay from counting restored buried jobs as new buries.
 # Everything else about the package (user, directories, runtime dependencies)
 # is unchanged; the patched binary replaces the package binary.
