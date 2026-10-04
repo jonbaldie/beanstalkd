@@ -1,0 +1,27 @@
+Fix TTR-expired jobs that stay reserved forever (issue #76; upstream bug,
+unfixed in v1.13 and on master).
+
+nanoseconds() has microsecond resolution (gettimeofday), and for a connection
+that is not waiting, connsched() sets tickat to the reserved job's deadline.
+In the final millisecond before the deadline the main loop busy-spins, so
+prottick() can find tickat == now and call conn_timeout() at the exact
+deadline. prottick() has already removed the connection from the heap, but
+conn_timeout() skipped the job because deadline_at >= nanoseconds() still held
+within the same microsecond. It then returned without calling connsched(),
+so the connection was never scheduled again and the job stayed reserved, with
+a negative time-left, until the worker sent another command or disconnected.
+
+Treat a job as expired once its deadline is reached, which matches
+prottick(), where only d > 0 means "not due yet".
+
+--- a/prot.c
++++ b/prot.c
+@@ -1870,7 +1870,7 @@
+     /* Check if any reserved jobs have run out of time. We should do this
+      * whether or not the client is waiting for a new reservation. */
+     while ((j = connsoonestjob(c))) {
+-        if (j->r.deadline_at >= nanoseconds())
++        if (j->r.deadline_at > nanoseconds())
+             break;
+ 
+         /* This job is in the middle of being written out. If we return it to
