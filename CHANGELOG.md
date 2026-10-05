@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- The `Makefile` now owns the image reference as one overridable `IMAGE`
+  variable (default `jonbaldie/beanstalkd:latest`). `make test` passes it to
+  every integration script, so `IMAGE=<tag> make test` tests the image it just
+  built, and CI pushes through a new `make push` target instead of naming the
+  tag itself (#65). `test_makefile.sh` checks that `build`, `test` and `push`
+  share the same image.
+
 ## [1.0.7] - 2026-10-04
 
 ### Fixed
