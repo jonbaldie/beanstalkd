@@ -5,9 +5,9 @@ This file provides instructions and context for AI coding agents working on this
 ## Build & Test
 
 ```bash
-make build    # Build Docker image $(IMAGE), default jonbaldie/beanstalkd:latest
-make test     # Build $(IMAGE) and run integration tests against it (test.sh)
-make push     # Push $(IMAGE) to Docker Hub (CI only)
+make build    # Build Docker image IMAGE, default jonbaldie/beanstalkd:latest
+make test     # Build IMAGE and run integration tests against it (test.sh)
+make push     # Push IMAGE to Docker Hub (CI only)
 ```
 
 `IMAGE` is defined once in the `Makefile`. Override it to build and test another

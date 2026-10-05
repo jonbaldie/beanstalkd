@@ -3,7 +3,7 @@ IMAGE ?= jonbaldie/beanstalkd:latest
 .PHONY: build test push
 
 build:
-	docker build -t $(IMAGE) .
+	docker build -t "$(IMAGE)" .
 
 test: build
 	./test_test.sh
@@ -15,4 +15,4 @@ test: build
 	./test.sh "$(IMAGE)"
 
 push:
-	docker push $(IMAGE)
+	docker push "$(IMAGE)"

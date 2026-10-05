@@ -41,17 +41,17 @@ check_image() {
     context="IMAGE=${image:-<unset>}"
 
     out=$(recipe "$image" build) || fail "$context make build: make -n failed"
-    expect_line "$out" "docker build -t $expected ." "$context make build"
+    expect_line "$out" "docker build -t \"$expected\" ." "$context make build"
 
     out=$(recipe "$image" test) || fail "$context make test: make -n failed"
-    expect_line "$out" "docker build -t $expected ." "$context make test"
+    expect_line "$out" "docker build -t \"$expected\" ." "$context make test"
     for script in test_cleanup.sh test_volume_isolation.sh test_busy_port.sh \
                   test_name_collision.sh test.sh; do
         expect_line "$out" "./$script \"$expected\"" "$context make test"
     done
 
     out=$(recipe "$image" push) || fail "$context make push: make -n failed"
-    expect_line "$out" "docker push $expected" "$context make push"
+    expect_line "$out" "docker push \"$expected\"" "$context make push"
 }
 
 check_image ""
@@ -60,6 +60,9 @@ check_image "$CUSTOM_IMAGE"
 # CI must publish through the Makefile rather than naming the tag itself.
 if grep -Fq "$DEFAULT_IMAGE" .github/workflows/ci.yml; then
     fail ".github/workflows/ci.yml names $DEFAULT_IMAGE instead of using the Makefile's IMAGE."
+fi
+if ! grep -Eq '^[[:space:]]*run: make push[[:space:]]*$' .github/workflows/ci.yml; then
+    fail ".github/workflows/ci.yml does not publish with 'make push'."
 fi
 
 if [ "$FAILED" -ne 0 ]; then
