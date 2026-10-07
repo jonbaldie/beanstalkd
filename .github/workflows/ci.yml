@@ -33,4 +33,4 @@ jobs:
 
     - name: Push to Docker Hub
       if: github.event_name == 'push'
-      run: docker push jonbaldie/beanstalkd:latest
+      run: make push
