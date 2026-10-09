@@ -54,6 +54,9 @@ FROM alpine AS build
 RUN apk add --no-cache gcc musl-dev make patch wget
 
 COPY patches/ /patches/
+# Tests stay outside /patches and are appended to upstream's testserv.c so they
+# can use its static server helpers; make check discovers their cttest_ symbols.
+COPY ct-tests/ /ct-tests/
 
 RUN set -eu; \
     wget -q -O /tmp/beanstalkd.tar.gz \
@@ -63,7 +66,10 @@ RUN set -eu; \
     tar xzf /tmp/beanstalkd.tar.gz -C /tmp; \
     cd /tmp/beanstalkd-1.13; \
     for p in /patches/*.patch; do patch -p1 < "$p"; done; \
+    cat /ct-tests/testserv-helpers.h >> testserv.c; \
+    for test in /ct-tests/*.c; do cat "$test" >> testserv.c; done; \
     make; \
+    make check; \
     cp beanstalkd /beanstalkd
 
 FROM alpine
