@@ -1,0 +1,121 @@
+# Evidence: state transitions persisted across restart (no bug). Volume xt-j1, beanstalkd -p 11300 -b /data -f 0
+## before stop
+> put 100 3600 60 3|aaa
+INSERTED 1
+> put 100 3600 60 3|bbb
+INSERTED 2
+> put 100 0 60 3|ccc
+INSERTED 3
+> put 100 0 60 3|ddd
+INSERTED 4
+> put 100 0 60 3|eee
+INSERTED 5
+> kick-job 1
+KICKED
+> kick 5
+KICKED 1
+> reserve-job 3
+RESERVED 3 3
+> bury 3 7
+BURIED
+> reserve-job 4
+RESERVED 4 3
+> release 4 9 3600
+RELEASED
+> reserve-job 5
+RESERVED 5 3
+> delete 5
+DELETED
+> stats-job 1
+OK 151
+tube: "default"
+state: ready
+pri: 100
+delay: 3600
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+> stats-job 2
+OK 151
+tube: "default"
+state: ready
+pri: 100
+delay: 3600
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+> stats-job 3
+OK 147
+tube: "default"
+state: buried
+pri: 7
+delay: 0
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 1
+kicks: 0
+> stats-job 4
+OK 154
+tube: "default"
+state: delayed
+pri: 9
+delay: 3600
+reserves: 1
+timeouts: 0
+releases: 1
+buries: 0
+kicks: 0
+> stats-job 5
+NOT_FOUND
+## after restart
+> stats-job 1
+OK 151
+tube: "default"
+state: ready
+pri: 100
+delay: 3600
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+> stats-job 2
+OK 151
+tube: "default"
+state: ready
+pri: 100
+delay: 3600
+reserves: 0
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 1
+> stats-job 3
+OK 147
+tube: "default"
+state: buried
+pri: 7
+delay: 0
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 1
+kicks: 0
+> stats-job 4
+OK 154
+tube: "default"
+state: delayed
+pri: 9
+delay: 3600
+reserves: 1
+timeouts: 0
+releases: 1
+buries: 0
+kicks: 0
+> stats-job 5
+NOT_FOUND

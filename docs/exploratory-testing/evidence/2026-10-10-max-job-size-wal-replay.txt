@@ -1,0 +1,192 @@
+# Evidence: jobs of max-job-size-1 or max-job-size bytes are dropped by WAL replay, with every later record in the same binlog file
+# Date: 2026-10-10. Image built from origin/master d7e0dc3 (make build IMAGE=beanstalkd-xt-20261010:local).
+# Docker 29.4.0 (OrbStack, arm64). Each run uses a fresh named volume and container.
+
+## Replay script: maxsize_followers.sh IMAGE MAXSIZE [beanstalkd args]
+```sh
+#!/bin/sh
+# Replay: one job of exactly max-job-size, followed by small jobs; restart; which survive?
+# Usage: maxsize_followers.sh IMAGE MAXSIZE [extra beanstalkd args...]
+set -u
+IMG=$1; MAX=$2; shift 2
+LBL=xt-run=20261010; V=xt-mf-$$; C=xt-mf-$$
+docker volume create --label $LBL $V >/dev/null
+run() { docker run -d --label $LBL --name $C -p 127.0.0.1::11300 -v $V:/data $IMG beanstalkd -p 11300 -b /data "$@" >/dev/null
+  P=$(docker port $C 11300/tcp | head -1 | sed 's/.*://'); sleep 1; }
+run "$@"
+echo "== start 1: beanstalkd -p 11300 -b /data $*"
+python3 -I - $P $MAX <<'PY'
+import socket,sys
+s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),timeout=5); f=s.makefile("rb"); m=int(sys.argv[2])
+for n in (5, m, 5, 5):
+    s.sendall(b"put 0 0 60 %d\r\n"%n + b"z"*n + b"\r\n"); print("put %d bytes ->"%n, f.readline().decode().strip())
+s.sendall(b"stats\r\n"); h=f.readline(); y=f.read(int(h.split()[1])+2).decode()
+print([l for l in y.splitlines() if l.startswith("current-jobs-ready")][0])
+PY
+docker stop $C >/dev/null; docker rm $C >/dev/null
+run "$@"
+echo "== start 2 (same volume) container log:"; docker logs $C 2>&1
+python3 -I - $P <<'PY'
+import socket,sys
+s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),timeout=5); f=s.makefile("rb")
+for i in (1,2,3,4):
+    s.sendall(b"peek %d\r\n"%i); h=f.readline().decode().strip()
+    if h.startswith("FOUND"): n=int(h.split()[2]); f.read(n+2); print("peek %d -> FOUND, %d bytes"%(i,n))
+    else: print("peek %d -> %s"%(i,h))
+s.sendall(b"stats\r\n"); h=f.readline(); y=f.read(int(h.split()[1])+2).decode()
+print([l for l in y.splitlines() if l.startswith("current-jobs-ready")][0])
+PY
+docker rm -fv $C >/dev/null; docker volume rm $V >/dev/null
+```
+
+## Output (default max-job-size 65535 twice, -z 1000, -z 1000 -f 0, control at 998 bytes)
+##### default -z, run 1
+== start 1: beanstalkd -p 11300 -b /data 
+put 5 bytes -> INSERTED 1
+put 65535 bytes -> INSERTED 2
+put 5 bytes -> INSERTED 3
+put 5 bytes -> INSERTED 4
+current-jobs-ready: 4
+== start 2 (same volume) container log:
+/data/binlog.1:113: job 2 is too big (65537 > 65535)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 5 bytes
+peek 2 -> NOT_FOUND
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+current-jobs-ready: 1
+##### default -z, run 2
+== start 1: beanstalkd -p 11300 -b /data 
+put 5 bytes -> INSERTED 1
+put 65535 bytes -> INSERTED 2
+put 5 bytes -> INSERTED 3
+put 5 bytes -> INSERTED 4
+current-jobs-ready: 4
+== start 2 (same volume) container log:
+/data/binlog.1:113: job 2 is too big (65537 > 65535)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 5 bytes
+peek 2 -> NOT_FOUND
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+current-jobs-ready: 1
+##### -z 1000
+== start 1: beanstalkd -p 11300 -b /data -z 1000
+put 5 bytes -> INSERTED 1
+put 1000 bytes -> INSERTED 2
+put 5 bytes -> INSERTED 3
+put 5 bytes -> INSERTED 4
+current-jobs-ready: 4
+== start 2 (same volume) container log:
+/data/binlog.1:113: job 2 is too big (1002 > 1000)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 5 bytes
+peek 2 -> NOT_FOUND
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+current-jobs-ready: 1
+##### -z 1000, -f 0
+== start 1: beanstalkd -p 11300 -b /data -z 1000 -f 0
+put 5 bytes -> INSERTED 1
+put 1000 bytes -> INSERTED 2
+put 5 bytes -> INSERTED 3
+put 5 bytes -> INSERTED 4
+current-jobs-ready: 4
+== start 2 (same volume) container log:
+/data/binlog.1:113: job 2 is too big (1002 > 1000)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 5 bytes
+peek 2 -> NOT_FOUND
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+current-jobs-ready: 1
+##### control: -z 1000, job of 998 bytes
+== start 1: beanstalkd -p 11300 -b /data -z 1000
+put 5 bytes -> INSERTED 1
+put 998 bytes -> INSERTED 2
+put 5 bytes -> INSERTED 3
+put 5 bytes -> INSERTED 4
+current-jobs-ready: 4
+== start 2 (same volume) container log:
+peek 1 -> FOUND, 5 bytes
+peek 2 -> FOUND, 998 bytes
+peek 3 -> FOUND, 5 bytes
+peek 4 -> FOUND, 5 bytes
+current-jobs-ready: 4
+
+## Boundary script: maxsize_repro.sh IMAGE
+```sh
+#!/bin/sh
+# Replay: jobs near max-job-size survive a restart with the documented persistence setup?
+# Usage: maxsize_repro.sh IMAGE [extra beanstalkd args...]
+set -u
+IMG=$1; shift
+LBL=xt-run=20261010; V=xt-max-$$; C=xt-max-$$
+docker volume create --label $LBL $V >/dev/null
+run() { docker run -d --label $LBL --name $C -p 127.0.0.1::11300 -v $V:/data $IMG beanstalkd -p 11300 -b /data "$@" >/dev/null
+  P=$(docker port $C 11300/tcp | head -1 | sed 's/.*://'); sleep 1; }
+run "$@"
+echo "== start 1: beanstalkd -p 11300 -b /data $*"
+python3 -I - $P <<'PY'
+import socket,sys
+s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),timeout=5); f=s.makefile("rb")
+s.sendall(b"stats\r\n"); h=f.readline(); y=f.read(int(h.split()[1])+2)
+print([l for l in y.decode().splitlines() if l.startswith("max-job-size")][0])
+for n in (65532,65533,65534,65535):
+    s.sendall(b"put 0 0 60 %d\r\n"%n + b"z"*n + b"\r\n"); print("put %d bytes ->"%n, f.readline().decode().strip())
+PY
+docker stop $C >/dev/null; docker rm $C >/dev/null
+run "$@"
+echo "== start 2 (same volume) container log:"; docker logs $C 2>&1
+python3 -I - $P <<'PY'
+import socket,sys
+s=socket.create_connection(("127.0.0.1",int(sys.argv[1])),timeout=5); f=s.makefile("rb")
+for i in (1,2,3,4):
+    s.sendall(b"peek %d\r\n"%i); h=f.readline().decode().strip()
+    if h.startswith("FOUND"): n=int(h.split()[2]); f.read(n+2); print("peek %d -> FOUND, %d bytes"%(i,n))
+    else: print("peek %d -> %s"%(i,h))
+PY
+docker rm -fv $C >/dev/null; docker volume rm $V >/dev/null
+```
+
+## Output (bodies 65532..65535, two runs)
+##### run 1
+== start 1: beanstalkd -p 11300 -b /data 
+max-job-size: 65535
+put 65532 bytes -> INSERTED 1
+put 65533 bytes -> INSERTED 2
+put 65534 bytes -> INSERTED 3
+put 65535 bytes -> INSERTED 4
+== start 2 (same volume) container log:
+/data/binlog.1:131266: job 3 is too big (65536 > 65535)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 65532 bytes
+peek 2 -> FOUND, 65533 bytes
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+##### run 2
+== start 1: beanstalkd -p 11300 -b /data 
+max-job-size: 65535
+put 65532 bytes -> INSERTED 1
+put 65533 bytes -> INSERTED 2
+put 65534 bytes -> INSERTED 3
+put 65535 bytes -> INSERTED 4
+== start 2 (same volume) container log:
+/data/binlog.1:131266: job 3 is too big (65536 > 65535)
+beanstalkd: Errors reading one or more WAL files.
+beanstalkd: Continuing. You may be missing data.
+peek 1 -> FOUND, 65532 bytes
+peek 2 -> FOUND, 65533 bytes
+peek 3 -> NOT_FOUND
+peek 4 -> NOT_FOUND
+
+## Root cause (upstream beanstalkd v1.13, unpatched by this repo)
+prot.c:1344  c->in_job = make_job(pri, delay, ttr, body_size + 2, c->use);   /* put accepts body_size <= limit; stored size includes CRLF */
+file.c:226 / file.c:351  if ((size_t)jr.body_size > job_data_size_limit) { warnpos(... "is too big"); goto Error; }
+  -> stored size (body+2) is compared with the user-facing limit, so bodies of limit-1 and limit bytes fail replay;
+     readrec returns 0 at Error, so the rest of that binlog file is not read.
