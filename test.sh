@@ -36,6 +36,8 @@ BURY_REPLAY_CONTAINER_NAME="beanstalkd-bury-replay-test-$RUN_ID"
 BURY_REPLAY_VOLUME="beanstalkd-bury-replay-test-$RUN_ID"
 TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME="beanstalkd-ttr-timeout-persistence-test-$RUN_ID"
 TTR_TIMEOUT_PERSISTENCE_VOLUME="beanstalkd-ttr-timeout-persistence-test-$RUN_ID"
+MAX_JOB_SIZE_REPLAY_CONTAINER_NAME="beanstalkd-max-job-size-replay-test-$RUN_ID"
+MAX_JOB_SIZE_REPLAY_VOLUME="beanstalkd-max-job-size-replay-test-$RUN_ID"
 
 # Cleanup selects by the ownership label rather than by name, so it can never
 # remove a resource this invocation did not create. The label is applied at
@@ -1783,3 +1785,140 @@ if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
 fi
 
 echo "PASS: TTR expiry persists the timeout counter across container restart."
+
+
+# ---- Test 19: jobs at max-job-size survive restart ----
+#
+# Regression for issue #82: put accepts a body of up to max-job-size bytes and
+# stores it with its trailing CRLF, but WAL replay compared that stored size
+# against max-job-size itself. On restart a job of max-job-size or
+# max-job-size - 1 bytes was rejected as too big, and replay stopped reading
+# the rest of that binlog file, dropping every later job in it.
+#
+# Jobs written before, at, and after the boundary must all survive a restart.
+
+echo "Checking max-job-size jobs across container restart..."
+
+if docker volume inspect "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null 2>&1; then
+    echo "FAIL: volume $MAX_JOB_SIZE_REPLAY_VOLUME already exists; refusing to adopt a volume this run did not create."
+    exit 1
+fi
+docker volume create --label "$OWNER_LABEL" "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null
+
+MAX_JOB_SIZE_REPLAY_PORT=$(start_beanstalkd \
+    --name "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
+    --volume "$MAX_JOB_SIZE_REPLAY_VOLUME:/data" \
+    beanstalkd -b /data)
+
+# With "setup", first puts a small job, 65535-, 65534- and 65533-byte jobs (the
+# default max-job-size and just below it), and a small job after them. Then
+# prints the id and body length of every job, plus the ready count.
+max_job_size_replay_jobs() {
+    python3 - "$1" "$2" <<'PY'
+import socket
+import sys
+
+SIZES = [5, 65535, 65534, 65533, 5]
+
+def read_line(sock):
+    response = bytearray()
+    while not response.endswith(b"\r\n"):
+        chunk = sock.recv(1)
+        if not chunk:
+            raise RuntimeError("connection closed before a complete response")
+        response.extend(chunk)
+    return bytes(response)
+
+def read_bytes(sock, length):
+    response = bytearray()
+    while len(response) < length:
+        chunk = sock.recv(length - len(response))
+        if not chunk:
+            raise RuntimeError("connection closed before the complete job body")
+        response.extend(chunk)
+    return bytes(response)
+
+def body(job_id, size):
+    return (b"%d" % job_id * size)[:size]
+
+port = int(sys.argv[1])
+s = socket.create_connection(("localhost", port), timeout=5)
+s.settimeout(5)
+
+if sys.argv[2] == "setup":
+    for job_id, size in enumerate(SIZES, 1):
+        s.sendall(b"put 0 0 60 %d\r\n%s\r\n" % (size, body(job_id, size)))
+        got = read_line(s)
+        if got != b"INSERTED %d\r\n" % job_id:
+            print("put of %d bytes returned %r" % (size, got), file=sys.stderr)
+            raise SystemExit(1)
+
+for job_id, size in enumerate(SIZES, 1):
+    s.sendall(b"peek %d\r\n" % job_id)
+    got = read_line(s)
+    if not got.startswith(b"FOUND "):
+        print("job %d: %s" % (job_id, got.decode().strip()))
+        continue
+    data = read_bytes(s, int(got.split()[2]) + 2)[:-2]
+    intact = "intact" if data == body(job_id, size) else "corrupt"
+    print("job %d: %d bytes %s" % (job_id, len(data), intact))
+
+s.sendall(b"stats\r\n")
+stats = read_line(s)
+stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+for line in stats_body.splitlines():
+    if line.split(":")[0] == "current-jobs-ready":
+        print(line)
+PY
+}
+
+EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS="job 1: 5 bytes intact
+job 2: 65535 bytes intact
+job 3: 65534 bytes intact
+job 4: 65533 bytes intact
+job 5: 5 bytes intact
+current-jobs-ready: 5"
+
+if ! MAX_JOB_SIZE_REPLAY_JOBS=$(max_job_size_replay_jobs "$MAX_JOB_SIZE_REPLAY_PORT" setup); then
+    report_container_failure "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
+        "failed setting up max-job-size replay test jobs."
+    exit 1
+fi
+
+if [ "$MAX_JOB_SIZE_REPLAY_JOBS" != "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS" ]; then
+    echo "FAIL: max-job-size jobs before restart were:"
+    echo "$MAX_JOB_SIZE_REPLAY_JOBS"
+    echo "expected:"
+    echo "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS"
+    exit 1
+fi
+
+echo "Restarting persistent beanstalkd container for max-job-size check..."
+docker stop -t 15 "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
+docker rm "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
+MAX_JOB_SIZE_REPLAY_PORT=$(start_beanstalkd \
+    --name "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
+    --volume "$MAX_JOB_SIZE_REPLAY_VOLUME:/data" \
+    beanstalkd -b /data)
+
+if ! MAX_JOB_SIZE_REPLAY_JOBS=$(max_job_size_replay_jobs "$MAX_JOB_SIZE_REPLAY_PORT" verify); then
+    report_container_failure "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
+        "failed reading max-job-size jobs after restart."
+    exit 1
+fi
+
+if [ "$MAX_JOB_SIZE_REPLAY_JOBS" != "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS" ]; then
+    echo "FAIL: max-job-size WAL replay regression; jobs after restart were:"
+    echo "$MAX_JOB_SIZE_REPLAY_JOBS"
+    echo "expected:"
+    echo "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS"
+    exit 1
+fi
+
+if docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1 | grep -q "Errors reading one or more WAL files"; then
+    echo "FAIL: restart reported a WAL read error for max-job-size jobs:"
+    docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1
+    exit 1
+fi
+
+echo "PASS: jobs at max-job-size survive a container restart."

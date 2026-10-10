@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Jobs whose body is `max-job-size` or `max-job-size - 1` bytes now survive a
+  daemon restart when persistence is enabled (`-b <wal_dir>`), together with
+  every later job in the same binlog file (#82). `put` stores a job with its
+  trailing CRLF, but WAL replay compared that stored size against
+  `max-job-size` itself, rejected the job as too big and stopped reading the
+  file. Upstream v1.13 and master still have this bug, so the image now also
+  applies `patches/replay-max-job-size.patch`, which allows for the CRLF.
+  Binlogs written before the fix replay correctly. `test.sh` and the image's
+  `make check` now cover jobs at the boundary and the jobs after them.
+
 ## [1.0.8] - 2026-10-07
 
 ### Changed

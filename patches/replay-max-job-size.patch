@@ -1,0 +1,38 @@
+Fix WAL replay dropping jobs at max-job-size (issue #82; upstream bug, unfixed
+in v1.13 and on master).
+
+put accepts a body of up to job_data_size_limit bytes and stores the job with
+body_size + 2, the body plus its trailing CRLF. readrec() and readrec5()
+compared that stored size against job_data_size_limit itself, so on restart a
+job whose body was max-job-size or max-job-size - 1 bytes was reported as
+"too big", and the Error path stopped reading the rest of that binlog file,
+dropping every later job in it.
+
+Allow for the CRLF in the replay check. A stored record larger than a legal
+put could have written is still rejected. The record format is unchanged, so
+binlogs written before this fix replay correctly.
+
+--- a/file.c
++++ b/file.c
+@@ -223,7 +223,9 @@
+     case Buried:
+     case Delayed:
+         if (!j) {
+-            if ((size_t)jr.body_size > job_data_size_limit) {
++            /* body_size includes the trailing CRLF that put stores after a
++             * body of up to job_data_size_limit bytes. */
++            if ((size_t)jr.body_size > job_data_size_limit + 2) {
+                 warnpos(f, -r, "job %"PRIu64" is too big (%"PRId32" > %zu)",
+                         jr.id,
+                         jr.body_size,
+@@ -348,7 +350,9 @@
+     case Buried:
+     case Delayed:
+         if (!j) {
+-            if ((size_t)jr.body_size > job_data_size_limit) {
++            /* body_size includes the trailing CRLF that put stores after a
++             * body of up to job_data_size_limit bytes. */
++            if ((size_t)jr.body_size > job_data_size_limit + 2) {
+                 warnpos(f, -r, "job %"PRIu64" is too big (%"PRId32" > %zu)",
+                         jr.id,
+                         jr.body_size,
