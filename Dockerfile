@@ -29,7 +29,11 @@
 # ready queue without writing the WAL (issue #70). It also intermittently
 # leaves a job reserved forever after its TTR expires, because conn_timeout()
 # skips a job whose deadline equals the current microsecond and then never
-# reschedules the connection (issue #76). No upstream
+# reschedules the connection (issue #76). It also drops a job whose body is
+# max-job-size or max-job-size - 1 bytes, and every later job in the same
+# binlog file, upon restart when persistence is enabled, because WAL replay
+# checks the stored size, which includes the trailing CRLF, against the body
+# limit (issue #82). No upstream
 # release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
 # packaging-level patches (patches/kick-bound.patch,
@@ -40,12 +44,14 @@
 # patches/release-wal-persistence.patch,
 # patches/replay-bury-count.patch,
 # patches/ttr-expiry-tick-boundary.patch,
-# patches/ttr-timeout-wal-persistence.patch) that validate bounds, require
+# patches/ttr-timeout-wal-persistence.patch,
+# patches/replay-max-job-size.patch) that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
 # prefixes, reject malformed oversize puts before entering bit-bucket mode,
 # persist reserve-job state transitions, delay-0 releases, and TTR expiries to
-# the WAL, expire TTRs that reach their deadline exactly, and
-# keep WAL replay from counting restored buried jobs as new buries.
+# the WAL, expire TTRs that reach their deadline exactly,
+# keep WAL replay from counting restored buried jobs as new buries, and
+# let WAL replay restore jobs at max-job-size.
 # Everything else about the package (user, directories, runtime dependencies)
 # is unchanged; the patched binary replaces the package binary.
 
