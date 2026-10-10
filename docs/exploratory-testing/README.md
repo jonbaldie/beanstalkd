@@ -3,6 +3,9 @@
 These reports record user-facing journeys exercised against the packaged
 beanstalkd image and link to replay evidence.
 
+- [2026-10-10 AFK pass](2026-10-10-beanstalkd-afk.md) — state transitions
+  across restart, shared-volume locking, and size limits with WAL replay
+  data loss (#82).
 - [2026-10-03 AFK pass](2026-10-03-beanstalkd-afk.md) — worker failure
   recovery and TTR timeout counter persistence (#70), delayed jobs across
   restart, drain mode.
