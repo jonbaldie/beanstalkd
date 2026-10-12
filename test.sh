@@ -1,6 +1,8 @@
 #!/usr/bin/env sh
 set -e
 
+. ./tests/harness.sh
+
 IMAGE="${1:-jonbaldie/beanstalkd:latest}"
 
 for dep in docker python3; do
@@ -10,20 +12,10 @@ for dep in docker python3; do
     fi
 done
 
+harness_init "test-run"
+
 echo "Starting beanstalkd container from image: $IMAGE"
 
-# Resource names must not be guessable from the PID alone (issue #30): PIDs are
-# recycled, so a user-owned container or volume could take the name this run
-# expects, get adopted by the test, and then be destroyed by cleanup. A random
-# suffix makes the names ours, and an ownership label scoped to that same
-# random id lets cleanup remove only what this invocation created.
-RUN_SUFFIX=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
-if [ -z "$RUN_SUFFIX" ]; then
-    echo "FAIL: could not generate a random suffix for test resource names."
-    exit 1
-fi
-RUN_ID="$$-$RUN_SUFFIX"
-OWNER_LABEL="beanstalkd-test-run=$RUN_ID"
 CONTAINER_NAME="beanstalkd-test-$RUN_ID"
 PERSISTENCE_CONTAINER_NAME="beanstalkd-persistence-test-$RUN_ID"
 PERSISTENCE_VOLUME="beanstalkd-persistence-test-$RUN_ID"
@@ -38,37 +30,6 @@ TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME="beanstalkd-ttr-timeout-persistence-test-
 TTR_TIMEOUT_PERSISTENCE_VOLUME="beanstalkd-ttr-timeout-persistence-test-$RUN_ID"
 MAX_JOB_SIZE_REPLAY_CONTAINER_NAME="beanstalkd-max-job-size-replay-test-$RUN_ID"
 MAX_JOB_SIZE_REPLAY_VOLUME="beanstalkd-max-job-size-replay-test-$RUN_ID"
-
-# Cleanup selects by the ownership label rather than by name, so it can never
-# remove a resource this invocation did not create. The label is applied at
-# creation time, which also covers containers that Docker created but failed to
-# start (issue #17), where no id is ever returned to us.
-cleanup() {
-    echo "Tearing down containers..."
-    OWNED_CONTAINERS=$(docker ps -aq --filter "label=$OWNER_LABEL" 2>/dev/null || true)
-    for owned in $OWNED_CONTAINERS; do
-        docker rm -fv "$owned" > /dev/null 2>&1 || true
-    done
-    OWNED_VOLUMES=$(docker volume ls -q --filter "label=$OWNER_LABEL" 2>/dev/null || true)
-    for owned in $OWNED_VOLUMES; do
-        docker volume rm -f "$owned" > /dev/null 2>&1 || true
-    done
-}
-
-assert_loopback_port() {
-    loopback_container="$1"
-    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$loopback_container" 2>/dev/null || true)
-    if [ -z "$host_ips" ]; then
-        echo "FAIL: $loopback_container did not publish port 11300." >&2
-        return 1
-    fi
-    for host_ip in $host_ips; do
-        if [ "$host_ip" != "127.0.0.1" ]; then
-            echo "FAIL: $loopback_container published port 11300 on $host_ip instead of loopback." >&2
-            return 1
-        fi
-    done
-}
 
 report_container_failure() {
     failed_container="$1"
@@ -226,10 +187,6 @@ start_beanstalkd() {
 
     printf '%s\n' "$provision_port"
 }
-
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' HUP TERM
 
 # ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
 PORT=$(start_beanstalkd --name "$CONTAINER_NAME")

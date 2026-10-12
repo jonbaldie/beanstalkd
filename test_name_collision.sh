@@ -11,26 +11,20 @@ set -eu
 # the shell that pre-created the colliding resources, which is exactly the PID
 # collision the issue describes.
 
-IMAGE="${1:-jonbaldie/beanstalkd:latest}"
-OUTPUT_FILE=$(mktemp "${TMPDIR:-/tmp}/beanstalkd-name-collision.XXXXXX")
-MARKER_VOLUME=""
-MARKER_CONTAINER=""
+. ./tests/harness.sh
+harness_init "name-collision"
 
-cleanup() {
-    [ -z "$MARKER_VOLUME" ] || docker volume rm -f "$MARKER_VOLUME" >/dev/null 2>&1 || true
-    [ -z "$MARKER_CONTAINER" ] || docker rm -fv "$MARKER_CONTAINER" >/dev/null 2>&1 || true
-    rm -f "$OUTPUT_FILE"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' HUP TERM
+IMAGE="${1:-jonbaldie/beanstalkd:latest}"
+OUTPUT_FILE="$SCRATCH_DIR/output"
 
 set +e
 sh -c '
-    docker volume create "beanstalkd-persistence-test-$$" >/dev/null
-    docker run -d --name "beanstalkd-test-$$" --entrypoint sleep "$1" 300 >/dev/null
-    exec ./test.sh "$1"
-' sh "$IMAGE" >"$OUTPUT_FILE" 2>&1 &
+    image="$1"
+    owner_label="$2"
+    docker volume create --label "$owner_label" "beanstalkd-persistence-test-$$" >/dev/null
+    docker run -d --label "$owner_label" --name "beanstalkd-test-$$" --entrypoint sleep "$image" 300 >/dev/null
+    exec ./test.sh "$image"
+' sh "$IMAGE" "$OWNER_LABEL" >"$OUTPUT_FILE" 2>&1 &
 COLLIDING_PID=$!
 wait "$COLLIDING_PID"
 RC=$?

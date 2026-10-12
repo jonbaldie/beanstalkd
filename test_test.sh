@@ -1,11 +1,11 @@
 #!/usr/bin/env sh
 set -eu
 
-TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/beanstalkd-test.XXXXXX")
-trap 'rm -rf "$TEMP_DIR"' EXIT HUP INT TERM
+. ./tests/harness.sh
+harness_init "test-test"
 
-BIN_DIR="$TEMP_DIR/bin"
-OUTPUT_FILE="$TEMP_DIR/output"
+BIN_DIR="$SCRATCH_DIR/bin"
+OUTPUT_FILE="$SCRATCH_DIR/output"
 mkdir "$BIN_DIR"
 
 ln -s "$(command -v sh)" "$BIN_DIR/sh"
