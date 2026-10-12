@@ -12,18 +12,13 @@ if [ -z "$REAL_DOCKER" ]; then
     exit 1
 fi
 
-TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/beanstalkd-volume-isolation-test.XXXXXX")
-BIN_DIR="$TEMP_DIR/bin"
-OUTPUT_FILE="$TEMP_DIR/output"
-RUN_SUFFIX=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
-MARKER_VOLUME="beanstalkd-unrelated-volume-$RUN_SUFFIX"
-mkdir "$BIN_DIR"
+. ./tests/harness.sh
+harness_init "volume-isolation-test"
 
-cleanup() {
-    "$REAL_DOCKER" volume rm -f "$MARKER_VOLUME" >/dev/null 2>&1 || true
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT HUP INT TERM
+BIN_DIR="$SCRATCH_DIR/bin"
+OUTPUT_FILE="$SCRATCH_DIR/output"
+MARKER_VOLUME="beanstalkd-unrelated-volume-$RUN_ID"
+mkdir "$BIN_DIR"
 
 if "$REAL_DOCKER" volume inspect "$MARKER_VOLUME" >/dev/null 2>&1; then
     echo "FAIL: generated marker volume already exists: $MARKER_VOLUME"
@@ -35,12 +30,13 @@ cat >"$BIN_DIR/docker" <<EOF
 set -eu
 REAL="$REAL_DOCKER"
 MARKER="$MARKER_VOLUME"
+LABEL="$OWNER_LABEL"
 
 if [ "\${1:-}" = rm ] && [ "\${2:-}" = -f ]; then
     for arg in "\$@"; do
         case "\$arg" in
             beanstalkd-volume-leak-test-*)
-                "\$REAL" volume create "\$MARKER" >/dev/null
+                "\$REAL" volume create --label "\$LABEL" "\$MARKER" >/dev/null
                 break
                 ;;
         esac

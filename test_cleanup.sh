@@ -13,25 +13,17 @@ if [ -z "$REAL_DOCKER" ]; then
     exit 1
 fi
 
-TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/beanstalkd-cleanup-test.XXXXXX")
-LABEL="beanstalkd-cleanup-test=$$"
-BIN_DIR="$TEMP_DIR/bin"
-mkdir "$BIN_DIR"
+. ./tests/harness.sh
+harness_init "cleanup-test"
 
-cleanup() {
-    "$REAL_DOCKER" ps -aq --filter "label=$LABEL" | while read -r id; do
-        [ -n "$id" ] || continue
-        "$REAL_DOCKER" rm -fv "$id" >/dev/null 2>&1 || true
-    done
-    rm -rf "$TEMP_DIR"
-}
-trap cleanup EXIT HUP INT TERM
+BIN_DIR="$SCRATCH_DIR/bin"
+mkdir "$BIN_DIR"
 
 cat >"$BIN_DIR/docker" <<EOF
 #!/usr/bin/env sh
 set -eu
 REAL="$REAL_DOCKER"
-LABEL="$LABEL"
+LABEL="$OWNER_LABEL"
 if [ "\${1:-}" = run ]; then
     shift
     tmp=\$(mktemp)
@@ -49,9 +41,9 @@ exec "\$REAL" "\$@"
 EOF
 chmod +x "$BIN_DIR/docker"
 
-OUTPUT_FILE="$TEMP_DIR/output"
-BEFORE_VOLS="$TEMP_DIR/before_vols"
-AFTER_VOLS="$TEMP_DIR/after_vols"
+OUTPUT_FILE="$SCRATCH_DIR/output"
+BEFORE_VOLS="$SCRATCH_DIR/before_vols"
+AFTER_VOLS="$SCRATCH_DIR/after_vols"
 "$REAL_DOCKER" volume ls -q | sort >"$BEFORE_VOLS"
 set +e
 PATH="$BIN_DIR:$PATH" ./test.sh "$IMAGE" >"$OUTPUT_FILE" 2>&1
@@ -59,7 +51,7 @@ RC=$?
 set -e
 "$REAL_DOCKER" volume ls -q | sort >"$AFTER_VOLS"
 
-LEAKED=$("$REAL_DOCKER" ps -aq --filter "label=$LABEL" || true)
+LEAKED=$("$REAL_DOCKER" ps -aq --filter "label=$OWNER_LABEL" || true)
 if [ -n "$LEAKED" ]; then
     echo "FAIL: test.sh leaked container(s) after docker run failed post-create (exit $RC):"
     echo "$LEAKED" | while read -r id; do
