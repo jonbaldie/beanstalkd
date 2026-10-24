@@ -1,0 +1,143 @@
+66629e3f9f2fe8a4db6034f296147d017cb9e117
+#0 building with "orbstack" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 5.25kB done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/alpine:latest
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context:
+#3 transferring context: 2B done
+#3 DONE 0.1s
+
+#4 [build 1/5] FROM docker.io/library/alpine:latest
+#4 CACHED
+
+#5 [internal] load build context
+#5 transferring context: 32.89kB 0.0s done
+#5 DONE 0.1s
+
+#6 [build 2/5] RUN apk add --no-cache gcc musl-dev make patch wget
+#6 1.968 ( 1/21) Upgrading musl (1.2.6-r2 -> 1.2.6-r3)
+#6 2.432 ( 2/21) Installing libgcc (15.2.0-r5)
+#6 2.630 ( 3/21) Installing jansson (2.15.0-r0)
+#6 2.875 ( 4/21) Installing libstdc++ (15.2.0-r5)
+#6 3.503 ( 5/21) Installing zstd-libs (1.5.7-r2)
+#6 3.825 ( 6/21) Installing binutils (2.45.1-r1)
+#6 ...
+
+#7 [stage-1 2/3] RUN apk add --no-cache beanstalkd     && apk upgrade --no-cache     && mkdir -p /data     && chown beanstalk:daemon /data
+#7 1.960 (1/1) Installing beanstalkd (1.13-r1)
+#7 2.238   Executing beanstalkd-1.13-r1.pre-install
+#7 2.257 Executing busybox-1.37.0-r31.trigger
+#7 2.271 OK: 8501 KiB in 17 packages
+#7 5.980 (1/7) Upgrading musl (1.2.6-r2 -> 1.2.6-r3)
+#7 6.130 (2/7) Upgrading alpine-release (3.24.2-r0 -> 3.24.3-r0)
+#7 6.318 (3/7) Upgrading libcrypto3 (3.5.8-r0 -> 3.5.9-r0)
+#7 7.237 (4/7) Upgrading libssl3 (3.5.8-r0 -> 3.5.9-r0)
+#7 7.395 (5/7) Upgrading zlib (1.3.2-r0 -> 1.3.2-r1)
+#7 7.452 (6/7) Upgrading ca-certificates-bundle (20260909-r0 -> 20261020-r0)
+#7 7.563 (7/7) Upgrading musl-utils (1.2.6-r2 -> 1.2.6-r3)
+#7 7.608 Executing busybox-1.37.0-r31.trigger
+#7 7.615 OK: 8498 KiB in 17 packages
+#7 DONE 7.9s
+
+#6 [build 2/5] RUN apk add --no-cache gcc musl-dev make patch wget
+#6 7.878 ( 7/21) Installing libgcc-static (15.2.0-r5)
+#6 8.918 ( 8/21) Installing libgomp (15.2.0-r5)
+#6 9.004 ( 9/21) Installing libatomic (15.2.0-r5)
+#6 9.071 (10/21) Installing gmp (6.3.0-r4)
+#6 9.163 (11/21) Installing isl26 (0.26-r2)
+#6 9.675 (12/21) Installing mpfr4 (4.2.2-r0)
+#6 14.98 (13/21) Installing mpc1 (1.3.1-r1)
+#6 15.03 (14/21) Installing gcc (15.2.0-r5)
+#6 45.56 (15/21) Installing make (4.4.1-r4)
+#6 45.64 (16/21) Installing musl-dev (1.2.6-r3)
+#6 49.58 (17/21) Installing patch (2.8-r0)
+#6 49.73 (18/21) Installing libunistring (1.4.2-r0)
+#6 49.98 (19/21) Installing libidn2 (2.3.8-r0)
+#6 50.06 (20/21) Installing pcre2 (10.49-r0)
+#6 53.45 (21/21) Installing wget (1.25.0-r3)
+#6 53.58 Executing busybox-1.37.0-r31.trigger
+#6 53.61 OK: 177.8 MiB in 36 packages
+#6 DONE 53.8s
+
+#8 [build 3/5] COPY patches/ /patches/
+#8 DONE 0.1s
+
+#9 [build 4/5] COPY ct-tests/ /ct-tests/
+#9 DONE 0.1s
+
+#10 [build 5/5] RUN set -eu;     wget -q -O /tmp/beanstalkd.tar.gz         "https://github.com/kr/beanstalkd/archive/v1.13.tar.gz";     echo "26292dcdc0a7011d2f8ad968612f2cd8b2ef07687224876015399ae85e9e5263  /tmp/beanstalkd.tar.gz"         | sha256sum -c -;     tar xzf /tmp/beanstalkd.tar.gz -C /tmp;     cd /tmp/beanstalkd-1.13;     for p in /patches/*.patch; do patch -p1 < "$p"; done;     cat /ct-tests/testserv-helpers.h >> testserv.c;     for test in /ct-tests/*.c; do cat "$test" >> testserv.c; done;     make;     make check;     cp beanstalkd /beanstalkd
+#10 6.384 /tmp/beanstalkd.tar.gz: OK
+#10 6.413 patching file main.c
+#10 6.414 patching file prot.c
+#10 6.416 patching file prot.c
+#10 6.417 patching file prot.c
+#10 6.418 patching file prot.c
+#10 6.418 Hunk #2 succeeded at 1809 (offset -1 lines).
+#10 6.419 patching file prot.c
+#10 6.420 Hunk #1 succeeded at 1560 (offset -19 lines).
+#10 6.421 patching file prot.c
+#10 6.421 Hunk #1 succeeded at 2323 (offset -29 lines).
+#10 6.422 patching file file.c
+#10 6.423 patching file prot.c
+#10 6.423 Hunk #2 succeeded at 1514 (offset -1 lines).
+#10 6.424 patching file prot.c
+#10 6.424 patch unexpectedly ends in middle of line
+#10 6.424 Hunk #1 succeeded at 1439 with fuzz 1 (offset 2 lines).
+#10 6.425 patching file prot.c
+#10 6.425 Hunk #1 succeeded at 763 (offset 2 lines).
+#10 6.425 Hunk #2 succeeded at 1975 (offset 23 lines).
+#10 6.425 Hunk #3 succeeded at 2010 (offset 23 lines).
+#10 6.426 patching file prot.c
+#10 6.426 Hunk #1 succeeded at 1892 (offset 22 lines).
+#10 6.427 patching file prot.c
+#10 6.435 /bin/sh: pkg-config: not found
+#10 6.441 cc -Wall -Werror -Wformat=2 -g   -c -o linux.o linux.c
+#10 6.473 cc -Wall -Werror -Wformat=2 -g   -c -o conn.o conn.c
+#10 6.494 cc -Wall -Werror -Wformat=2 -g   -c -o file.o file.c
+#10 6.524 cc -Wall -Werror -Wformat=2 -g   -c -o heap.o heap.c
+#10 6.537 cc -Wall -Werror -Wformat=2 -g   -c -o job.o job.c
+#10 6.556 cc -Wall -Werror -Wformat=2 -g   -c -o ms.o ms.c
+#10 6.569 cc -Wall -Werror -Wformat=2 -g   -c -o net.o net.c
+#10 6.588 cc -Wall -Werror -Wformat=2 -g   -c -o primes.o primes.c
+#10 6.594 cc -Wall -Werror -Wformat=2 -g   -c -o prot.o prot.c
+#10 6.662 cc -Wall -Werror -Wformat=2 -g   -c -o serv.o serv.c
+#10 6.674 cc -Wall -Werror -Wformat=2 -g   -c -o time.o time.c
+#10 6.684 cc -Wall -Werror -Wformat=2 -g   -c -o tube.o tube.c
+#10 6.697 cc -Wall -Werror -Wformat=2 -g   -c -o util.o util.c
+#10 6.714 ./verc.sh >vers.c
+#10 6.714 cc -Wall -Werror -Wformat=2 -g   -c -o vers.o vers.c
+#10 6.720 cc -Wall -Werror -Wformat=2 -g   -c -o walg.o walg.c
+#10 6.745 cc -Wall -Werror -Wformat=2 -g   -c -o main.o main.c
+#10 6.759 cc   -o beanstalkd linux.o conn.o file.o heap.o job.o ms.o net.o primes.o prot.o serv.o time.o tube.o util.o vers.o walg.o main.o -lrt
+#10 6.768 /bin/sh: pkg-config: not found
+#10 6.770 cc -Wall -Werror -Wformat=2 -g   -c -o testheap.o testheap.c
+#10 6.795 cc -Wall -Werror -Wformat=2 -g   -c -o testjobs.o testjobs.c
+#10 6.813 cc -Wall -Werror -Wformat=2 -g   -c -o testms.o testms.c
+#10 6.829 cc -Wall -Werror -Wformat=2 -g   -c -o testserv.o testserv.c
+#10 6.902 cc -Wall -Werror -Wformat=2 -g   -c -o testutil.o testutil.c
+#10 6.921 ct/gen testheap.o testjobs.o testms.o testserv.o testutil.o  >ct/_ctcheck.c.part
+#10 6.929 mv ct/_ctcheck.c.part ct/_ctcheck.c
+#10 6.929 cc -Wall -Werror -Wformat=2 -g   -c -o ct/_ctcheck.o ct/_ctcheck.c
+#10 6.939 cc -Wall -Werror -Wformat=2 -g   -c -o ct/ct.o ct/ct.c
+#10 6.967 cc   ct/_ctcheck.o ct/ct.o linux.o conn.o file.o heap.o job.o ms.o net.o primes.o prot.o serv.o time.o tube.o util.o vers.o walg.o testheap.o testjobs.o testms.o testserv.o testutil.o  -lrt -o ct/_ctcheck
+#10 6.974 ct/_ctcheck
+#10 6.977 .................................................................................................................
+#10 17.19 
+#10 17.19 PASS
+#10 DONE 17.3s
+
+#11 [stage-1 3/3] COPY --from=build /beanstalkd /usr/bin/beanstalkd
+#11 DONE 0.1s
+
+#12 exporting to image
+#12 exporting layers 0.1s done
+#12 writing image sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd
+#12 writing image sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd done
+#12 naming to docker.io/library/beanstalkd-et-20261024:run done
+#12 DONE 0.2s

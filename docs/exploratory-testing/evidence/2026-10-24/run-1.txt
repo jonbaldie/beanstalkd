@@ -1,0 +1,234 @@
+JOURNEY 1: workers isolate paused queues; pause correction and recovery
+$ docker run -d --name beanstalkd-et-98991d8194d0-queues --label exploration=beanstalkd-et-98991d8194d0 -p 127.0.0.1::11300 beanstalkd-et-20261024:run beanstalkd exit= 0
+839e69a49ae4005b7f279faf06006f714a6985336fb8568c40d8cc103536563b
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-queues exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32935"}]}
+> 'use email'
+< b'USING email'
+> put 0 0 2 22 sha256=de3662c3aeefb935d4affa028ae3f0ae7a9255942192cd9c1700f0cfdd33d3ce split= False
+< b'INSERTED 1'
+> 'use audit'
+< b'USING audit'
+> put 100 0 10 13 sha256=2e7c550d4581197eb1f508cab9123c2b8abcc13e108517e681298c6433c76e4f split= False
+< b'INSERTED 2'
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-queues exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32935"}]}
+> 'watch email'
+< b'WATCHING 2'
+> 'watch audit'
+< b'WATCHING 3'
+> 'ignore default'
+< b'WATCHING 2'
+> 'pause-tube email 30'
+< b'PAUSED'
+> 'reserve-with-timeout 0'
+< b'RESERVED 2 13' sha256=2e7c550d4581197eb1f508cab9123c2b8abcc13e108517e681298c6433c76e4f
+> 'delete 2'
+< b'DELETED'
+> 'reserve-with-timeout 0'
+< b'TIMED_OUT'
+> 'pause-tube email -1'
+< b'BAD_FORMAT'
+> 'pause-tube email 4294967296'
+< b'BAD_FORMAT'
+> 'pause-tube email 1garbage'
+< b'BAD_FORMAT'
+> 'reserve-with-timeout 0'
+< b'TIMED_OUT'
+> 'pause-tube email 0'
+< b'PAUSED'
+> 'reserve-with-timeout 0'
+< b'RESERVED 1 22' sha256=de3662c3aeefb935d4affa028ae3f0ae7a9255942192cd9c1700f0cfdd33d3ce
+> 'touch 1'
+< b'TOUCHED'
+> 'stats-job 1'
+< b'OK 146' ---
+id: 1
+tube: "email"
+state: reserved
+pri: 0
+age: 2
+delay: 0
+ttr: 2
+time-left: 0
+file: 0
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 0
+kicks: 0
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-queues exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32935"}]}
+> 'watch email'
+< b'WATCHING 2'
+> 'ignore default'
+< b'WATCHING 1'
+> 'reserve-with-timeout 1'
+< b'RESERVED 1 22' sha256=de3662c3aeefb935d4affa028ae3f0ae7a9255942192cd9c1700f0cfdd33d3ce
+> 'delete 1'
+< b'DELETED'
+> 'peek 1'
+< b'NOT_FOUND'
+PASS JOURNEY 1
+JOURNEY 2: custom size limit + opaque data persist across restarts
+$ docker volume create --label exploration=beanstalkd-et-98991d8194d0 beanstalkd-et-98991d8194d0-wal-data exit= 0
+beanstalkd-et-98991d8194d0-wal-data
+$ docker run -d --name beanstalkd-et-98991d8194d0-wal --label exploration=beanstalkd-et-98991d8194d0 -p 127.0.0.1::11300 -v beanstalkd-et-98991d8194d0-wal-data:/data beanstalkd-et-20261024:run beanstalkd -b /data -f 0 -z 1000 -s 4096 exit= 0
+ff2fe7432f4010b4b8d04fc944370bacdd2739ad47ae2559dec4072387c77019
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-wal exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32936"}]}
+> put 0 0 10 0 sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 split= False
+< b'INSERTED 1'
+> put 1 0 10 256 sha256=40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880 split= True
+< b'INSERTED 2'
+> put 2 0 10 998 sha256=11afbaf316478ff901a3392891fdf659cabdd55288f757a2c327a709e66adce8 split= False
+< b'INSERTED 3'
+> put 3 0 10 999 sha256=751e03f7a3033b34761b66e1c586691b937e0369148a3759b79d546058300daa split= False
+< b'INSERTED 4'
+> put 4 0 10 1000 sha256=950f88b09cf1d5e2cdbc5660c77dce3962265c548797950095629a0ea2daea46 split= False
+< b'INSERTED 5'
+> put 5 0 10 14 sha256=b5f466a168731190b203408637b1b68f2ee167d75ba72f85d08c02d3a1776a6e split= False
+< b'INSERTED 6'
+> 'reserve-job 2'
+< b'RESERVED 2 256' sha256=40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880
+> 'bury 2 7'
+< b'BURIED'
+> 'stats-job 2'
+< b'OK 147' ---
+id: 2
+tube: "default"
+state: buried
+pri: 7
+age: 0
+delay: 0
+ttr: 10
+time-left: 0
+file: 1
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 1
+kicks: 0
+$ docker restart -t 3 beanstalkd-et-98991d8194d0-wal exit= 0
+beanstalkd-et-98991d8194d0-wal
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-wal exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32937"}]}
+> 'peek 1'
+< b'FOUND 1 0' sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+> 'peek 2'
+< b'FOUND 2 256' sha256=40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880
+> 'peek 3'
+< b'FOUND 3 998' sha256=11afbaf316478ff901a3392891fdf659cabdd55288f757a2c327a709e66adce8
+> 'peek 4'
+< b'FOUND 4 999' sha256=751e03f7a3033b34761b66e1c586691b937e0369148a3759b79d546058300daa
+> 'peek 5'
+< b'FOUND 5 1000' sha256=950f88b09cf1d5e2cdbc5660c77dce3962265c548797950095629a0ea2daea46
+> 'peek 6'
+< b'FOUND 6 14' sha256=b5f466a168731190b203408637b1b68f2ee167d75ba72f85d08c02d3a1776a6e
+> 'stats-job 2'
+< b'OK 147' ---
+id: 2
+tube: "default"
+state: buried
+pri: 7
+age: 0
+delay: 0
+ttr: 10
+time-left: 0
+file: 1
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 1
+kicks: 0
+$ docker restart -t 3 beanstalkd-et-98991d8194d0-wal exit= 0
+beanstalkd-et-98991d8194d0-wal
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-wal exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32938"}]}
+> 'peek 1'
+< b'FOUND 1 0' sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+> 'peek 2'
+< b'FOUND 2 256' sha256=40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880
+> 'peek 3'
+< b'FOUND 3 998' sha256=11afbaf316478ff901a3392891fdf659cabdd55288f757a2c327a709e66adce8
+> 'peek 4'
+< b'FOUND 4 999' sha256=751e03f7a3033b34761b66e1c586691b937e0369148a3759b79d546058300daa
+> 'peek 5'
+< b'FOUND 5 1000' sha256=950f88b09cf1d5e2cdbc5660c77dce3962265c548797950095629a0ea2daea46
+> 'peek 6'
+< b'FOUND 6 14' sha256=b5f466a168731190b203408637b1b68f2ee167d75ba72f85d08c02d3a1776a6e
+> 'stats-job 2'
+< b'OK 147' ---
+id: 2
+tube: "default"
+state: buried
+pri: 7
+age: 0
+delay: 0
+ttr: 10
+time-left: 0
+file: 1
+reserves: 1
+timeouts: 0
+releases: 0
+buries: 1
+kicks: 0
+> 'delete 6'
+< b'DELETED'
+$ docker restart -t 3 beanstalkd-et-98991d8194d0-wal exit= 0
+beanstalkd-et-98991d8194d0-wal
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-wal exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32939"}]}
+> 'peek 6'
+< b'NOT_FOUND'
+> 'kick-job 2'
+< b'KICKED'
+> 'reserve-job 2'
+< b'RESERVED 2 256' sha256=40aff2e9d2d8922e47afd4648e6967497158785fbd1da870e7110266bf944880
+> 'delete 2'
+< b'DELETED'
+PASS JOURNEY 2
+JOURNEY 3: producer recovers after rejected payloads on same connection
+$ docker run -d --name beanstalkd-et-98991d8194d0-recovery --label exploration=beanstalkd-et-98991d8194d0 -p 127.0.0.1::11300 beanstalkd-et-20261024:run beanstalkd -z 1000 exit= 0
+0bbf40f9bfda42df97dae8c4a5b6567ab5abb60c79fe3da7fbd1b59ef1a26ae1
+$ docker inspect --format {{json .NetworkSettings.Ports}} beanstalkd-et-98991d8194d0-recovery exit= 0
+{"11300/tcp":[{"HostIp":"127.0.0.1","HostPort":"32940"}]}
+> pipelined oversize put (1001 bytes) then valid put (2 bytes)
+< b'JOB_TOO_BIG'
+< b'INSERTED 1'
+> 'reserve-with-timeout 0'
+< b'RESERVED 1 2' sha256=2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df
+> 'delete 1'
+< b'DELETED'
+> malformed size followed by corrected put
+> 'put 0 0 10 1001 garbage'
+< b'BAD_FORMAT'
+> put 0 0 10 9 sha256=3def73f15b56a47bba6777da129db988df316fa2e8b10fb5a005442349585c43 split= True
+< b'INSERTED 2'
+> 'reserve-with-timeout 0'
+< b'RESERVED 2 9' sha256=3def73f15b56a47bba6777da129db988df316fa2e8b10fb5a005442349585c43
+> 'delete 2'
+< b'DELETED'
+> invalid body terminator followed by same-connection retry
+< b'EXPECTED_CRLF'
+> put 0 0 10 7 sha256=d0ca11115fce8e9f5368e445ef0017b51bef8eb707cb4869e92ff406a1068536 split= False
+< b'INSERTED 4'
+> 'reserve-with-timeout 0'
+< b'RESERVED 4 7' sha256=d0ca11115fce8e9f5368e445ef0017b51bef8eb707cb4869e92ff406a1068536
+> 'delete 4'
+< b'DELETED'
+> 'peek-ready'
+< b'NOT_FOUND'
+PASS JOURNEY 3
+$ docker logs beanstalkd-et-98991d8194d0-queues exit= 0
+$ docker rm -fv beanstalkd-et-98991d8194d0-queues exit= 0
+beanstalkd-et-98991d8194d0-queues
+$ docker logs beanstalkd-et-98991d8194d0-wal exit= 0
+$ docker rm -fv beanstalkd-et-98991d8194d0-wal exit= 0
+beanstalkd-et-98991d8194d0-wal
+$ docker logs beanstalkd-et-98991d8194d0-recovery exit= 0
+$ docker rm -fv beanstalkd-et-98991d8194d0-recovery exit= 0
+beanstalkd-et-98991d8194d0-recovery
+$ docker volume rm beanstalkd-et-98991d8194d0-wal-data exit= 0
+beanstalkd-et-98991d8194d0-wal-data
+CLEANUP: all replay containers and volumes removed
