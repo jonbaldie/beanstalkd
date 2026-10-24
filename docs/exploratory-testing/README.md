@@ -3,6 +3,9 @@
 These reports record user-facing journeys exercised against the packaged
 beanstalkd image and link to replay evidence.
 
+- [2026-10-24 AFK pass](2026-10-24-beanstalkd-afk.md) — paused multi-tube
+  workers, custom-size WAL recovery, and same-connection producer retries;
+  no confirmed bugs.
 - [2026-10-10 AFK pass](2026-10-10-beanstalkd-afk.md) — state transitions
   across restart, shared-volume locking, and size limits with WAL replay
   data loss (#82).

@@ -1,0 +1,18 @@
+2026-10-24T00:49:42Z
+66629e3f9f2fe8a4db6034f296147d017cb9e117
+29.8.2 linux/arm64
+sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd user=beanstalk
+TMPDIR=/Users/jonathanbaldie/.fleet/events/scratch/f743404be37513da400721f82ee872177b0858a628cd3cb096b5b79b6dae278d
+Tracked lockfiles: 
+Tracked symlinks:
+120000 47dc3e3d863cfb5727b87d785d09abf9743c0a72 0	CLAUDE.md
+Untagged: beanstalkd-et-20261024:run
+Deleted: sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd
+
+Remaining run containers:
+
+Remaining run volumes:
+
+Run image (must be absent):
+[]
+Error response from daemon: No such image: beanstalkd-et-20261024:run

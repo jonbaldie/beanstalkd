@@ -1,0 +1,134 @@
+docker build -t "beanstalkd-et-20261024:run" .
+#0 building with "orbstack" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 5.25kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/alpine:latest
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [build 1/5] FROM docker.io/library/alpine:latest
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 1.41kB done
+#5 DONE 0.0s
+
+#6 [build 5/5] RUN set -eu;     wget -q -O /tmp/beanstalkd.tar.gz         "https://github.com/kr/beanstalkd/archive/v1.13.tar.gz";     echo "26292dcdc0a7011d2f8ad968612f2cd8b2ef07687224876015399ae85e9e5263  /tmp/beanstalkd.tar.gz"         | sha256sum -c -;     tar xzf /tmp/beanstalkd.tar.gz -C /tmp;     cd /tmp/beanstalkd-1.13;     for p in /patches/*.patch; do patch -p1 < "$p"; done;     cat /ct-tests/testserv-helpers.h >> testserv.c;     for test in /ct-tests/*.c; do cat "$test" >> testserv.c; done;     make;     make check;     cp beanstalkd /beanstalkd
+#6 CACHED
+
+#7 [stage-1 2/3] RUN apk add --no-cache beanstalkd     && apk upgrade --no-cache     && mkdir -p /data     && chown beanstalk:daemon /data
+#7 CACHED
+
+#8 [build 3/5] COPY patches/ /patches/
+#8 CACHED
+
+#9 [build 4/5] COPY ct-tests/ /ct-tests/
+#9 CACHED
+
+#10 [build 2/5] RUN apk add --no-cache gcc musl-dev make patch wget
+#10 CACHED
+
+#11 [stage-1 3/3] COPY --from=build /beanstalkd /usr/bin/beanstalkd
+#11 CACHED
+
+#12 exporting to image
+#12 exporting layers done
+#12 writing image sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd
+#12 writing image sha256:a2321b5c728235bab4da1eceac6ceeaa2cde4c82d12473f0ebfcff8386a3cedd done
+#12 naming to docker.io/library/beanstalkd-et-20261024:run done
+#12 DONE 0.0s
+./test_test.sh
+PASS: test.sh reports missing python3 before starting beanstalkd.
+./test_makefile.sh
+PASS: make build, test and push share one IMAGE reference.
+./test_cleanup.sh "beanstalkd-et-20261024:run"
+PASS: test.sh removes containers created by a failing docker run.
+PASS: test.sh removes anonymous volumes attached to those containers.
+./test_volume_isolation.sh "beanstalkd-et-20261024:run"
+PASS: test.sh ignores an unrelated volume created during the default-run check.
+./test_busy_port.sh "beanstalkd-et-20261024:run"
+PASS: test.sh succeeds when host port 11300 is already allocated.
+./test_name_collision.sh "beanstalkd-et-20261024:run"
+PASS: test.sh neither adopts nor deletes pre-existing resources whose names collide with its PID.
+./test.sh "beanstalkd-et-20261024:run"
+Starting beanstalkd container from image: beanstalkd-et-20261024:run
+Waiting for beanstalkd to respond on port 32986...
+PASS: beanstalkd is responding on port 32986.
+Checking process user...
+PASS: beanstalkd is running as non-root user 'beanstal'.
+Checking for install script artifact...
+PASS: install.sh is not present in image filesystem or layer history.
+Checking EXPOSE metadata...
+PASS: port 11300/tcp is correctly declared in EXPOSE metadata.
+Checking image size is under 20 MB...
+PASS: image size is 15 MB (within 20 MB limit).
+Checking malformed kick bounds are rejected and leave the queue unmutated...
+PASS: malformed kick bounds return BAD_FORMAT and the queue is unmutated.
+Checking persistence on a Docker-managed named volume...
+Waiting for beanstalkd to respond on port 32987...
+PASS: beanstalkd is responding on port 32987.
+Restarting persistent beanstalkd container...
+Waiting for beanstalkd to respond on port 32988...
+PASS: beanstalkd is responding on port 32988.
+PASS: job survived a container restart on a Docker-managed named volume.
+Checking default run attaches no anonymous volume...
+Waiting for beanstalkd to respond on port 32989...
+PASS: beanstalkd is responding on port 32989.
+PASS: default run attaches no volume and docker rm -f leaves none behind.
+Checking malformed reserve-with-timeout bounds are rejected and leave the queue unmutated...
+PASS: malformed reserve-with-timeout bounds return BAD_FORMAT and the queue is unmutated.
+Checking command lines splitting 
+ across buffer boundary do not hang...
+PASS: command lines splitting 
+ across buffer boundary return BAD_FORMAT and preserve stream sync.
+Checking pause-tube commands without space delimiter are rejected...
+PASS: pause-tube commands without space delimiter return UNKNOWN_COMMAND.
+Checking malformed quit prefixes are rejected...
+PASS: malformed quit prefixes return BAD_FORMAT.
+Checking malformed oversize put commands return BAD_FORMAT without hanging...
+PASS: malformed oversize put commands return BAD_FORMAT and preserve stream sync.
+Checking reserve-job WAL persistence across container restart...
+Waiting for beanstalkd to respond on port 32990...
+PASS: beanstalkd is responding on port 32990.
+Restarting persistent beanstalkd container for reserve-job check...
+Waiting for beanstalkd to respond on port 32991...
+PASS: beanstalkd is responding on port 32991.
+PASS: jobs reserved via reserve-job persist across container restart.
+Checking release with delay 0 WAL persistence across container restart...
+Waiting for beanstalkd to respond on port 32992...
+PASS: beanstalkd is responding on port 32992.
+Restarting persistent beanstalkd container for release check...
+Waiting for beanstalkd to respond on port 32993...
+PASS: beanstalkd is responding on port 32993.
+PASS: release with delay 0 persists priority and counters across container restart.
+Checking buried job bury count across container restarts...
+Waiting for beanstalkd to respond on port 32994...
+PASS: beanstalkd is responding on port 32994.
+Restarting persistent beanstalkd container for bury count check (1 of 2)...
+Waiting for beanstalkd to respond on port 32995...
+PASS: beanstalkd is responding on port 32995.
+Restarting persistent beanstalkd container for bury count check (2 of 2)...
+Waiting for beanstalkd to respond on port 32996...
+PASS: beanstalkd is responding on port 32996.
+PASS: buried job keeps its bury count across container restarts.
+Checking TTR timeout counter across container restart...
+Waiting for beanstalkd to respond on port 32997...
+PASS: beanstalkd is responding on port 32997.
+Restarting persistent beanstalkd container for TTR timeout check...
+Waiting for beanstalkd to respond on port 32998...
+PASS: beanstalkd is responding on port 32998.
+PASS: TTR expiry persists the timeout counter across container restart.
+Checking max-job-size jobs across container restart...
+Waiting for beanstalkd to respond on port 32999...
+PASS: beanstalkd is responding on port 32999.
+Restarting persistent beanstalkd container for max-job-size check...
+Waiting for beanstalkd to respond on port 33000...
+PASS: beanstalkd is responding on port 33000.
+PASS: jobs at max-job-size survive a container restart.
+Tearing down containers...
