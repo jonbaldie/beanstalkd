@@ -1,11 +1,18 @@
 IMAGE ?= jonbaldie/beanstalkd:latest
 
-.PHONY: build test push
+.PHONY: build test test-ct push
 
 build:
 	docker build -t "$(IMAGE)" .
 
+test-ct:
+	./test_ct_manifest.sh
+	@test ! -L .ct-build
+	mkdir -p .ct-build
+	./ct-tests/run.sh ".ct-build/run-$$$$"
+
 test: build
+	./test_ct_manifest.sh
 	./test_test.sh
 	./test_makefile.sh
 	./test_cleanup.sh "$(IMAGE)"
