@@ -20,6 +20,8 @@ harness_init() {
         exit 1
     fi
     TEMP_DIR="$SCRATCH_DIR"
+    RESOURCE_RECEIPT="$SCRATCH_DIR/resources"
+    : >"$RESOURCE_RECEIPT"
 
     trap harness_cleanup EXIT
     trap 'exit 130' INT
@@ -29,6 +31,7 @@ harness_init() {
 harness_cleanup() {
     if [ -n "${OWNER_LABEL:-}" ]; then
         if command -v docker >/dev/null 2>&1; then
+            harness_cleanup_receipt
             _owned_containers=$(docker ps -aq --filter "label=$OWNER_LABEL" 2>/dev/null || true)
             for _owned in $_owned_containers; do
                 [ -n "$_owned" ] || continue
@@ -44,6 +47,67 @@ harness_cleanup() {
     if [ -n "${SCRATCH_DIR:-}" ] && [ -d "$SCRATCH_DIR" ]; then
         rm -rf "$SCRATCH_DIR"
     fi
+}
+
+# Record only a known newly-created container. Optional arguments are mount
+# destinations the caller explicitly requested as NEW anonymous volumes (e.g.
+# create -v /receipt-data), never named/bind mounts or inherited volumes.
+# The file crosses process boundaries and is retained unchanged by verification.
+harness_record_container() {
+    printf 'container %s\n' "$1" >>"$RESOURCE_RECEIPT"
+    _receipt_mounts=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Destination}} {{.Name}}{{"\n"}}{{end}}{{end}}' "$1") || return 1
+    shift
+    for _receipt_destination do
+        _receipt_found=false
+        while read -r _receipt_path _receipt_volume; do
+            if [ "$_receipt_path" = "$_receipt_destination" ] && [ -n "$_receipt_volume" ]; then
+                printf 'volume %s\n' "$_receipt_volume" >>"$RESOURCE_RECEIPT"
+                _receipt_found=true
+            fi
+        done <<EOF
+$_receipt_mounts
+EOF
+        if [ "$_receipt_found" != true ]; then
+            echo "FAIL: no anonymous fixture volume at $_receipt_destination." >&2
+            return 1
+        fi
+    done
+}
+
+# Explicit named volumes require this invocation's label as ownership evidence.
+harness_record_volume() {
+    _receipt_owner=$(docker volume inspect --format "{{index .Labels \"${OWNER_LABEL%%=*}\"}}" "$1") || return 1
+    if [ "$_receipt_owner" != "${OWNER_LABEL#*=}" ]; then
+        echo "FAIL: refusing to record unowned volume $1." >&2
+        return 1
+    fi
+    printf 'volume %s\n' "$1" >>"$RESOURCE_RECEIPT"
+}
+
+# Query Docker, not receipt contents alone. Verification never deletes resources.
+harness_assert_resources_gone() {
+    _receipt_result=0
+    while read -r _receipt_kind _receipt_id; do
+        if docker "$_receipt_kind" inspect "$_receipt_id" >/dev/null 2>&1; then
+            echo "FAIL: leaked $_receipt_kind $_receipt_id." >&2
+            _receipt_result=1
+        fi
+    done <"$RESOURCE_RECEIPT"
+    return "$_receipt_result"
+}
+
+harness_cleanup_receipt() {
+    [ -f "${RESOURCE_RECEIPT:-}" ] || return 0
+    # Containers first, including their anonymous mounts; then detached volumes.
+    for _receipt_type in container volume; do
+        while read -r _receipt_kind _receipt_id; do
+            [ "$_receipt_kind" = "$_receipt_type" ] || continue
+            case "$_receipt_kind" in
+                container) docker rm -fv "$_receipt_id" >/dev/null 2>&1 || true ;;
+                volume) docker volume rm -f "$_receipt_id" >/dev/null 2>&1 || true ;;
+            esac
+        done <"$RESOURCE_RECEIPT"
+    done
 }
 
 assert_loopback_port() {

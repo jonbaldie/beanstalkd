@@ -24,6 +24,8 @@ cat >"$BIN_DIR/docker" <<EOF
 set -eu
 REAL="$REAL_DOCKER"
 LABEL="$OWNER_LABEL"
+. "$(pwd)/tests/harness.sh"
+RESOURCE_RECEIPT="$RESOURCE_RECEIPT"
 if [ "\${1:-}" = run ]; then
     shift
     tmp=\$(mktemp)
@@ -33,8 +35,9 @@ if [ "\${1:-}" = run ]; then
         esac
         printf '%s\0' "\$a" >> "\$tmp"
     done
-    xargs -0 "\$REAL" create --label "\$LABEL" < "\$tmp" >/dev/null
+    id=\$(xargs -0 "\$REAL" create --label "\$LABEL" -v /receipt-data < "\$tmp")
     rm -f "\$tmp"
+    harness_record_container "\$id" /receipt-data
     exit 125
 fi
 exec "\$REAL" "\$@"
@@ -42,34 +45,18 @@ EOF
 chmod +x "$BIN_DIR/docker"
 
 OUTPUT_FILE="$SCRATCH_DIR/output"
-BEFORE_VOLS="$SCRATCH_DIR/before_vols"
-AFTER_VOLS="$SCRATCH_DIR/after_vols"
-"$REAL_DOCKER" volume ls -q | sort >"$BEFORE_VOLS"
 set +e
 PATH="$BIN_DIR:$PATH" ./test.sh "$IMAGE" >"$OUTPUT_FILE" 2>&1
 RC=$?
 set -e
-"$REAL_DOCKER" volume ls -q | sort >"$AFTER_VOLS"
 
-LEAKED=$("$REAL_DOCKER" ps -aq --filter "label=$OWNER_LABEL" || true)
-if [ -n "$LEAKED" ]; then
-    echo "FAIL: test.sh leaked container(s) after docker run failed post-create (exit $RC):"
-    echo "$LEAKED" | while read -r id; do
-        [ -n "$id" ] || continue
-        "$REAL_DOCKER" ps -a --filter id="$id" --format '{{.ID}} {{.Image}} {{.Status}} {{.Names}}'
-    done
+if [ ! -s "$RESOURCE_RECEIPT" ]; then
+    echo "FAIL: failed-create wrapper did not capture its resource receipt."
     cat "$OUTPUT_FILE"
     exit 1
 fi
-
-NEW_VOLS=$(comm -13 "$BEFORE_VOLS" "$AFTER_VOLS")
-if [ -n "$NEW_VOLS" ]; then
-    echo "FAIL: test.sh leaked volume(s) after docker run failed post-create (exit $RC):"
-    echo "$NEW_VOLS" | while read -r vol; do
-        [ -n "$vol" ] || continue
-        "$REAL_DOCKER" volume inspect "$vol" --format '{{.Name}} {{json .Labels}}'
-        "$REAL_DOCKER" volume rm -f "$vol" >/dev/null 2>&1 || true
-    done
+if ! harness_assert_resources_gone; then
+    echo "FAIL: test.sh leaked recorded resources after docker run failed post-create (exit $RC)."
     cat "$OUTPUT_FILE"
     exit 1
 fi
