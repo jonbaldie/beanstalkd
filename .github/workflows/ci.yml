@@ -18,6 +18,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Run standalone upstream C tests
+      run: make test-ct
+
     - name: Build Docker image
       run: make build
 

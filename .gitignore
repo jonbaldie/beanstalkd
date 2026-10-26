@@ -1,4 +1,5 @@
 .worktrees
+.ct-build/
 
 # Tool directories — ignored from version control; kept locally
 .serena/
