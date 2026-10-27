@@ -1,0 +1,43 @@
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            BuildKit is currently disabled; enable it by removing the DOCKER_BUILDKIT=0
+            environment-variable.
+
+port 32774
+JOURNEY 1 priority, ownership and delete
+'use alpha\r\n' => 'USING alpha'
+'put 100 0 30 3\r\nlow\r\n' => 'INSERTED 1'
+'put 10 0 30 4\r\nhigh\r\n' => 'INSERTED 2'
+'watch alpha\r\n' => 'WATCHING 2'
+'ignore default\r\n' => 'WATCHING 1'
+'reserve-with-timeout 1\r\n' => 'RESERVED 2 4'
+'delete 2\r\n' => 'NOT_FOUND'
+'delete 2\r\n' => 'DELETED'
+'reserve-with-timeout 1\r\n' => 'RESERVED 1 3'
+'delete 1\r\n' => 'DELETED'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+JOURNEY 2 delayed, buried, kicked
+'put 20 2 30 4\r\nwait\r\n' => 'INSERTED 3'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+'reserve-with-timeout 4\r\n' => 'RESERVED 3 4'
+'bury 3 20\r\n' => 'BURIED'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+'kick 1\r\n' => 'KICKED 1'
+'reserve-with-timeout 1\r\n' => 'RESERVED 3 4'
+'delete 3\r\n' => 'DELETED'
+JOURNEY 3 persistent ready and buried jobs
+'put 10 0 30 4\r\nkeep\r\n' => 'INSERTED 4'
+'put 20 0 30 4\r\nhold\r\n' => 'INSERTED 5'
+'reserve-with-timeout 1\r\n' => 'RESERVED 4 4'
+'release 4 10 0\r\n' => 'RELEASED'
+'reserve-job 5\r\n' => 'RESERVED 5 4'
+'bury 5 20\r\n' => 'BURIED'
+'use alpha\r\n' => 'USING alpha'
+'watch alpha\r\n' => 'WATCHING 2'
+'ignore default\r\n' => 'WATCHING 1'
+'reserve-with-timeout 1\r\n' => 'RESERVED 4 4'
+'delete 4\r\n' => 'DELETED'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+'kick 1\r\n' => 'KICKED 1'
+'reserve-with-timeout 1\r\n' => 'RESERVED 5 4'
+'delete 5\r\n' => 'DELETED'
+PASS all journeys

@@ -1,0 +1,23 @@
+port 32771
+JOURNEY 1 priority, ownership and delete
+'use alpha\r\n' => 'USING alpha'
+'put 100 0 30 3\r\nlow\r\n' => 'INSERTED 1'
+'put 10 0 30 4\r\nhigh\r\n' => 'INSERTED 2'
+'watch alpha\r\n' => 'WATCHING 2'
+'ignore default\r\n' => 'WATCHING 1'
+'reserve-with-timeout 1\r\n' => 'RESERVED 2 4'
+'delete 2\r\n' => 'NOT_FOUND'
+'delete 2\r\n' => 'DELETED'
+'reserve-with-timeout 1\r\n' => 'RESERVED 1 3'
+'delete 1\r\n' => 'DELETED'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+JOURNEY 2 delayed, buried, kicked
+'put 20 2 30 4\r\nwait\r\n' => 'INSERTED 3'
+'reserve-with-timeout 0\r\n' => 'TIMED_OUT'
+Traceback (most recent call last):
+  File "/tmp/beanstalkd-explore-20261027/.explore/journeys.py", line 49, in <module>
+    command(b,'reserve-with-timeout 4\r\n','RESERVED 3 4')
+    ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/tmp/beanstalkd-explore-20261027/.explore/journeys.py", line 14, in command
+    chunk = s.recv(1)
+TimeoutError: timed out
