@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-10-27
+
+### Changed
+- Run the patched upstream C tests standalone or during the Docker build using a
+  shared, manifest-driven test assembly (#85, #93).
+- Share test resource ownership receipts across the integration harness so
+  cleanup checks distinguish owned resources from unrelated Docker resources
+  (#86, #88, #92, #94).
+- Add queue recovery exploratory reports and evidence (#91, #95).
+
 ## [1.0.9] - 2026-10-11
 
 ### Fixed
