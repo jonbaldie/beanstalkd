@@ -19,6 +19,7 @@ test: build
 	./test_patch_series.sh
 	./test_ct_manifest.sh
 	./test_test.sh
+	python3 tests/test_runner_cli.py
 	./test_makefile.sh
 	./test_cleanup.sh "$(IMAGE)"
 	./test_resource_receipts.sh "$(IMAGE)"

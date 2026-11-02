@@ -3,9 +3,105 @@ set -e
 
 . ./tests/harness.sh
 
-IMAGE="${1:-jonbaldie/beanstalkd:latest}"
+CASE_REGISTRY='stats test_stats none
+non_root test_non_root shared
+install_artifact test_install_artifact shared
+expose test_expose none
+image_size test_image_size none
+kick_bounds test_kick_bounds shared
+persistence test_persistence none
+volume_leak test_volume_leak none
+reserve_timeout_bounds test_reserve_timeout_bounds shared
+split_buffer test_split_buffer shared
+pause_tube_delimiter test_pause_tube_delimiter shared
+quit_prefix test_quit_prefix shared
+put_oversize_trailing_garbage test_put_oversize_trailing_garbage shared
+reserve_job_persistence test_reserve_job_persistence none
+release_persistence test_release_persistence none
+bury_replay test_bury_replay none
+ttr_timeout_persistence test_ttr_timeout_persistence none
+max_job_size_replay test_max_job_size_replay none'
 
-for dep in docker python3; do
+usage() {
+    echo 'Usage: ./test.sh [--test NAME] [--docker-cmd EXECUTABLE] [IMAGE]'
+    echo 'Tests (in execution order):'
+    while read -r case_name case_function case_fixture; do
+        printf '  %s\n' "$case_name"
+    done <<EOF
+$CASE_REGISTRY
+EOF
+}
+
+cli_error() {
+    printf 'FAIL: %s\n' "$1" >&2
+    usage >&2
+    exit 2
+}
+
+SELECTED_TEST=""
+HARNESS_DOCKER_CMD="${DOCKER_CMD:-docker}"
+IMAGE="jonbaldie/beanstalkd:latest"
+image_seen=false
+docker_cmd_seen=false
+help_requested=false
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --test)
+            [ -z "$SELECTED_TEST" ] || cli_error 'duplicate --test option.'
+            [ "$#" -ge 2 ] && [ -n "$2" ] || cli_error '--test requires a name.'
+            SELECTED_TEST="$2"
+            shift 2
+            ;;
+        --docker-cmd)
+            [ "$docker_cmd_seen" = false ] || cli_error 'duplicate --docker-cmd option.'
+            [ "$#" -ge 2 ] && [ -n "$2" ] || cli_error '--docker-cmd requires an executable.'
+            case "$2" in -*) cli_error '--docker-cmd requires an executable.' ;; esac
+            HARNESS_DOCKER_CMD="$2"
+            docker_cmd_seen=true
+            shift 2
+            ;;
+        --help|-h)
+            help_requested=true
+            shift
+            ;;
+        --)
+            shift
+            [ "$#" -le 1 ] || cli_error 'expected at most one IMAGE.'
+            if [ "$#" -eq 1 ]; then
+                [ "$image_seen" = false ] && [ -n "$1" ] || cli_error 'expected one nonempty IMAGE.'
+                IMAGE="$1"
+                image_seen=true
+                shift
+            fi
+            ;;
+        -*) cli_error "unknown option: $1" ;;
+        *)
+            [ "$image_seen" = false ] && [ -n "$1" ] || cli_error 'expected one nonempty IMAGE.'
+            IMAGE="$1"
+            image_seen=true
+            shift
+            ;;
+    esac
+done
+
+if [ -n "$SELECTED_TEST" ]; then
+    selected_found=false
+    while read -r case_name case_function case_fixture; do
+        if [ "$case_name" = "$SELECTED_TEST" ]; then
+            selected_found=true
+            break
+        fi
+    done <<EOF
+$CASE_REGISTRY
+EOF
+    [ "$selected_found" = true ] || cli_error "unknown test: $SELECTED_TEST"
+fi
+if [ "$help_requested" = true ]; then
+    usage
+    exit 0
+fi
+
+for dep in "$HARNESS_DOCKER_CMD" python3; do
     if ! command -v "$dep" >/dev/null 2>&1; then
         echo "FAIL: '$dep' is required by test.sh but was not found in PATH."
         exit 1
@@ -36,7 +132,7 @@ report_container_failure() {
     failure_message="$2"
     echo "FAIL: $failure_message" >&2
     echo "Container logs:" >&2
-    docker logs "$failed_container" >&2 || true
+    harness_docker logs "$failed_container" >&2 || true
 }
 
 # NOTE: nc -z is intentionally avoided here because Docker's userland proxy
@@ -105,14 +201,14 @@ wait_for_beanstalkd() {
 
 run_beanstalkd_container() {
     if [ -n "$provision_volume" ]; then
-        docker run -d \
+        harness_docker run -d \
             --name "$provision_container" \
             --label "$OWNER_LABEL" \
             -p 127.0.0.1:0:11300 \
             -v "$provision_volume" \
             "$IMAGE" "$@"
     else
-        docker run -d \
+        harness_docker run -d \
             --name "$provision_container" \
             --label "$OWNER_LABEL" \
             -p 127.0.0.1:0:11300 \
@@ -158,7 +254,7 @@ start_beanstalkd() {
         return 1
     fi
 
-    provision_running=$(docker inspect --format='{{.State.Running}}' \
+    provision_running=$(harness_docker inspect --format='{{.State.Running}}' \
         "$provision_container" 2>/dev/null || true)
     if [ "$provision_running" != true ]; then
         report_container_failure "$provision_container" \
@@ -172,7 +268,7 @@ start_beanstalkd() {
         return 1
     fi
 
-    provision_port=$(docker inspect \
+    provision_port=$(harness_docker inspect \
         --format='{{(index (index .NetworkSettings.Ports "11300/tcp") 0).HostPort}}' \
         "$provision_container" 2>/dev/null || true)
     if [ -z "$provision_port" ] || [ "$provision_port" = "<no value>" ]; then
@@ -206,11 +302,11 @@ persistent_start() {
     PERSIST_NAME="$1"
     PERSIST_VOLUME="$2"
     PERSIST_START_CALLBACK="$3"
-    if docker volume inspect "$PERSIST_VOLUME" > /dev/null 2>&1; then
+    if harness_docker volume inspect "$PERSIST_VOLUME" > /dev/null 2>&1; then
         echo "FAIL: volume $PERSIST_VOLUME already exists; refusing to adopt a volume this run did not create." >&2
         return 1
     fi
-    docker volume create --label "$OWNER_LABEL" "$PERSIST_VOLUME" > /dev/null || return 1
+    harness_docker volume create --label "$OWNER_LABEL" "$PERSIST_VOLUME" > /dev/null || return 1
     PERSIST_PORT=$("$PERSIST_START_CALLBACK") || return 1
 }
 
@@ -236,7 +332,7 @@ persistent_restart() {
         persistent_reserved "$PERSIST_PORT" || return 1
         echo "PASS: stats-job 3 reports state: reserved immediately before stop."
     fi
-    docker stop -t 15 "$PERSIST_NAME" > /dev/null || return 1
+    harness_docker stop -t 15 "$PERSIST_NAME" > /dev/null || return 1
     if [ -n "${PERSIST_CLIENT_PID:-}" ]; then
         kill "$PERSIST_CLIENT_PID" 2>/dev/null || true
         persistent_status=0
@@ -247,13 +343,16 @@ persistent_restart() {
             return 1
         fi
     fi
-    docker rm "$PERSIST_NAME" > /dev/null || return 1
+    harness_docker rm "$PERSIST_NAME" > /dev/null || return 1
     PERSIST_PORT=$("$PERSIST_START_CALLBACK") || return 1
 }
 
+test_stats() {
 # ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
 PORT=$(start_beanstalkd --name "$CONTAINER_NAME")
+}
 
+test_non_root() {
 # ---- Test 2: Process runs as non-root user ----
 #
 # NOTE: `docker exec whoami` is intentionally avoided because it spawns a new
@@ -262,7 +361,7 @@ PORT=$(start_beanstalkd --name "$CONTAINER_NAME")
 # that the beanstalkd process itself is executing under an unprivileged user.
 
 echo "Checking process user..."
-RUNNING_USER=$(docker exec "$CONTAINER_NAME" ps -o user,comm | awk '$2 ~ /beanstalkd/ {print $1; exit}')
+RUNNING_USER=$(harness_docker exec "$CONTAINER_NAME" ps -o user,comm | awk '$2 ~ /beanstalkd/ {print $1; exit}')
 if [ -z "$RUNNING_USER" ]; then
     echo "FAIL: unable to determine beanstalkd process user."
     exit 1
@@ -272,19 +371,23 @@ if [ "$RUNNING_USER" = "root" ] || [ "$RUNNING_USER" = "0" ]; then
     exit 1
 fi
 echo "PASS: beanstalkd is running as non-root user '$RUNNING_USER'."
+}
 
+test_install_artifact() {
 # ---- Test 3: Install script not present in filesystem or image layers ----
 echo "Checking for install script artifact..."
-if docker exec "$CONTAINER_NAME" test -f /install.sh 2>/dev/null; then
+if harness_docker exec "$CONTAINER_NAME" test -f /install.sh 2>/dev/null; then
     echo "FAIL: install.sh was not cleaned up and is present inside the image."
     exit 1
 fi
-if docker history --no-trunc "$IMAGE" | grep -q "install\.sh"; then
+if harness_docker history --no-trunc "$IMAGE" | grep -q "install\.sh"; then
     echo "FAIL: install.sh persists in image layer history."
     exit 1
 fi
 echo "PASS: install.sh is not present in image filesystem or layer history."
+}
 
+test_expose() {
 # ---- Test 4: EXPOSE metadata declares port 11300 ----
 #
 # NOTE: we inspect the IMAGE (not the running container) because `docker inspect`
@@ -292,13 +395,15 @@ echo "PASS: install.sh is not present in image filesystem or layer history."
 # EXPOSE directive. `docker image inspect` reflects only what the Dockerfile declared.
 
 echo "Checking EXPOSE metadata..."
-EXPOSED=$(docker image inspect "$IMAGE" --format='{{json .Config.ExposedPorts}}')
+EXPOSED=$(harness_docker image inspect "$IMAGE" --format='{{json .Config.ExposedPorts}}')
 if ! printf '%s' "$EXPOSED" | grep -q '"11300/tcp"'; then
     echo "FAIL: port 11300/tcp is not declared in EXPOSE metadata (got: $EXPOSED)"
     exit 1
 fi
 echo "PASS: port 11300/tcp is correctly declared in EXPOSE metadata."
+}
 
+test_image_size() {
 # ---- Test 5: Image is not bloated ----
 #
 # Users pulling this image notice its size directly (pull time, disk usage,
@@ -312,7 +417,7 @@ echo "PASS: port 11300/tcp is correctly declared in EXPOSE metadata."
 # What users observe is image size, so that is what we measure.
 
 echo "Checking image size is under 20 MB..."
-IMAGE_SIZE=$(docker image inspect "$IMAGE" --format='{{.Size}}')
+IMAGE_SIZE=$(harness_docker image inspect "$IMAGE" --format='{{.Size}}')
 MAX_BYTES=20971520   # 20 * 1024 * 1024
 if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
     IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
@@ -321,7 +426,9 @@ if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
 fi
 IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
 echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
+}
 
+test_kick_bounds() {
 # ---- Test 6: malformed kick bounds are rejected and leave the queue unmutated ----
 #
 # Regression for issue #36: the packaged daemon parsed the `kick` bound with a
@@ -455,7 +562,9 @@ PY
 echo "Checking malformed kick bounds are rejected and leave the queue unmutated..."
 check_kick_bounds "$PORT"
 echo "PASS: malformed kick bounds return BAD_FORMAT and the queue is unmutated."
+}
 
+test_persistence() {
 # ---- Test 7: Persistence works on a Docker-managed named volume ----
 #
 # Docker creates a new named volume as root-owned when the image does not
@@ -568,7 +677,9 @@ if ! reserve_persistent_job "$PERSISTENCE_PORT"; then
 fi
 
 echo "PASS: job survived a container restart on a Docker-managed named volume."
+}
 
+test_volume_leak() {
 # ---- Test 8: default run leaves no anonymous volume behind ----
 #
 # Regression for issue #24: `VOLUME ["/data"]` attaches an anonymous volume to
@@ -580,22 +691,24 @@ echo "PASS: job survived a container restart on a Docker-managed named volume."
 echo "Checking default run attaches no anonymous volume..."
 
 start_beanstalkd --name "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
-ATTACHED_VOLUMES=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
-docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
+ATTACHED_VOLUMES=$(harness_docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$VOLUME_LEAK_CONTAINER_NAME")
+harness_docker rm -f "$VOLUME_LEAK_CONTAINER_NAME" > /dev/null
 
 if [ -n "$ATTACHED_VOLUMES" ]; then
     echo "FAIL: a default run attached anonymous volume(s):"
     for volume in $ATTACHED_VOLUMES; do
-        if docker volume inspect "$volume" > /dev/null 2>&1; then
+        if harness_docker volume inspect "$volume" > /dev/null 2>&1; then
             echo "FAIL: docker rm -f of a default container left volume $volume behind."
-            docker volume rm -f "$volume" > /dev/null 2>&1 || true
+            harness_docker volume rm -f "$volume" > /dev/null 2>&1 || true
         fi
     done
     exit 1
 fi
 
 echo "PASS: default run attaches no volume and docker rm -f leaves none behind."
+}
 
+test_reserve_timeout_bounds() {
 # ---- Test 9: malformed reserve-with-timeout bounds are rejected and leave the queue unmutated ----
 #
 # Regression for issue #39: dispatch_cmd() parsed the `reserve-with-timeout`
@@ -737,7 +850,9 @@ PY
 echo "Checking malformed reserve-with-timeout bounds are rejected and leave the queue unmutated..."
 check_reserve_timeout_bounds "$PORT"
 echo "PASS: malformed reserve-with-timeout bounds return BAD_FORMAT and the queue is unmutated."
+}
 
+test_split_buffer() {
 # ---- Test 10: command lines splitting \r\n across 224-byte read buffer boundary do not hang ----
 #
 # Regression for issue #40: when a client sends a command line where `\r` lands
@@ -857,7 +972,9 @@ PY
 echo "Checking command lines splitting \\r\\n across buffer boundary do not hang..."
 check_split_buffer_boundary "$PORT"
 echo "PASS: command lines splitting \\r\\n across buffer boundary return BAD_FORMAT and preserve stream sync."
+}
 
+test_pause_tube_delimiter() {
 # ---- Test 11: pause-tube commands without space delimiter are rejected ----
 #
 # Regression for issue #41: CMD_PAUSE_TUBE was defined as "pause-tube" without
@@ -971,8 +1088,9 @@ PY
 echo "Checking pause-tube commands without space delimiter are rejected..."
 check_pause_tube_delimiter "$PORT"
 echo "PASS: pause-tube commands without space delimiter return UNKNOWN_COMMAND."
+}
 
-
+test_quit_prefix() {
 # ---- Test 12: malformed quit prefixes are rejected ----
 #
 # Regression for issue #42: which_cmd() prefix-matches CMD_QUIT ("quit") and
@@ -1056,7 +1174,9 @@ PY
 echo "Checking malformed quit prefixes are rejected..."
 check_quit_prefix "$PORT"
 echo "PASS: malformed quit prefixes return BAD_FORMAT."
+}
 
+test_put_oversize_trailing_garbage() {
 # ---- Test 13: malformed put commands with oversize body return BAD_FORMAT ----
 #
 # Regression for issue #48: dispatch_cmd()'s OP_PUT case evaluated
@@ -1185,7 +1305,9 @@ PY
 echo "Checking malformed oversize put commands return BAD_FORMAT without hanging..."
 check_put_oversize_trailing_garbage "$PORT"
 echo "PASS: malformed oversize put commands return BAD_FORMAT and preserve stream sync."
+}
 
+test_reserve_job_persistence() {
 # ---- Test 15: jobs reserved via reserve-job persist across daemon restart ----
 #
 # Regression for issue #61: When persistence is enabled (-b <dir>), reserving
@@ -1434,8 +1556,9 @@ if ! verify_reserve_job_persistence "$RESERVE_JOB_PORT"; then
 fi
 
 echo "PASS: jobs reserved via reserve-job persist across container restart."
+}
 
-
+test_release_persistence() {
 # ---- Test 16: release with delay 0 persists priority and counters ----
 #
 # Regression for issue #66: When persistence is enabled (-b <dir>), releasing
@@ -1450,11 +1573,11 @@ echo "PASS: jobs reserved via reserve-job persist across container restart."
 
 echo "Checking release with delay 0 WAL persistence across container restart..."
 
-if docker volume inspect "$RELEASE_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+if harness_docker volume inspect "$RELEASE_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
     echo "FAIL: volume $RELEASE_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
     exit 1
 fi
-docker volume create --label "$OWNER_LABEL" "$RELEASE_PERSISTENCE_VOLUME" > /dev/null
+harness_docker volume create --label "$OWNER_LABEL" "$RELEASE_PERSISTENCE_VOLUME" > /dev/null
 
 RELEASE_PORT=$(start_beanstalkd \
     --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
@@ -1536,8 +1659,8 @@ if [ "$RELEASE_STATS_BEFORE" != "$EXPECTED_RELEASE_STATS" ]; then
 fi
 
 echo "Restarting persistent beanstalkd container for release check..."
-docker stop -t 15 "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker rm "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
+harness_docker stop -t 15 "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
+harness_docker rm "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
 RELEASE_PORT=$(start_beanstalkd \
     --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
     --volume "$RELEASE_PERSISTENCE_VOLUME:/data" \
@@ -1558,8 +1681,9 @@ if [ "$RELEASE_STATS_AFTER" != "$EXPECTED_RELEASE_STATS" ]; then
 fi
 
 echo "PASS: release with delay 0 persists priority and counters across container restart."
+}
 
-
+test_bury_replay() {
 # ---- Test 17: restart does not count as a bury ----
 #
 # Regression for issue #67: When persistence is enabled (-b <dir>), prot_replay
@@ -1571,11 +1695,11 @@ echo "PASS: release with delay 0 persists priority and counters across container
 
 echo "Checking buried job bury count across container restarts..."
 
-if docker volume inspect "$BURY_REPLAY_VOLUME" > /dev/null 2>&1; then
+if harness_docker volume inspect "$BURY_REPLAY_VOLUME" > /dev/null 2>&1; then
     echo "FAIL: volume $BURY_REPLAY_VOLUME already exists; refusing to adopt a volume this run did not create."
     exit 1
 fi
-docker volume create --label "$OWNER_LABEL" "$BURY_REPLAY_VOLUME" > /dev/null
+harness_docker volume create --label "$OWNER_LABEL" "$BURY_REPLAY_VOLUME" > /dev/null
 
 BURY_REPLAY_PORT=$(start_beanstalkd \
     --name "$BURY_REPLAY_CONTAINER_NAME" \
@@ -1656,8 +1780,8 @@ fi
 
 for restart in 1 2; do
     echo "Restarting persistent beanstalkd container for bury count check ($restart of 2)..."
-    docker stop -t 15 "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
-    docker rm "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
+    harness_docker stop -t 15 "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
+    harness_docker rm "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
     BURY_REPLAY_PORT=$(start_beanstalkd \
         --name "$BURY_REPLAY_CONTAINER_NAME" \
         --volume "$BURY_REPLAY_VOLUME:/data" \
@@ -1679,8 +1803,9 @@ for restart in 1 2; do
 done
 
 echo "PASS: buried job keeps its bury count across container restarts."
+}
 
-
+test_ttr_timeout_persistence() {
 # ---- Test 18: TTR expiry persists the timeout counter ----
 #
 # Regression for issue #70: When persistence is enabled (-b <dir>), a job whose
@@ -1694,11 +1819,11 @@ echo "PASS: buried job keeps its bury count across container restarts."
 
 echo "Checking TTR timeout counter across container restart..."
 
-if docker volume inspect "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
+if harness_docker volume inspect "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
     echo "FAIL: volume $TTR_TIMEOUT_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
     exit 1
 fi
-docker volume create --label "$OWNER_LABEL" "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null
+harness_docker volume create --label "$OWNER_LABEL" "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null
 
 TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
     --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
@@ -1795,8 +1920,8 @@ if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
 fi
 
 echo "Restarting persistent beanstalkd container for TTR timeout check..."
-docker stop -t 15 "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker rm "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
+harness_docker stop -t 15 "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
+harness_docker rm "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
 TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
     --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
     --volume "$TTR_TIMEOUT_PERSISTENCE_VOLUME:/data" \
@@ -1817,8 +1942,9 @@ if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
 fi
 
 echo "PASS: TTR expiry persists the timeout counter across container restart."
+}
 
-
+test_max_job_size_replay() {
 # ---- Test 19: jobs at max-job-size survive restart ----
 #
 # Regression for issue #82: put accepts a body of up to max-job-size bytes and
@@ -1831,11 +1957,11 @@ echo "PASS: TTR expiry persists the timeout counter across container restart."
 
 echo "Checking max-job-size jobs across container restart..."
 
-if docker volume inspect "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null 2>&1; then
+if harness_docker volume inspect "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null 2>&1; then
     echo "FAIL: volume $MAX_JOB_SIZE_REPLAY_VOLUME already exists; refusing to adopt a volume this run did not create."
     exit 1
 fi
-docker volume create --label "$OWNER_LABEL" "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null
+harness_docker volume create --label "$OWNER_LABEL" "$MAX_JOB_SIZE_REPLAY_VOLUME" > /dev/null
 
 MAX_JOB_SIZE_REPLAY_PORT=$(start_beanstalkd \
     --name "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
@@ -1926,8 +2052,8 @@ if [ "$MAX_JOB_SIZE_REPLAY_JOBS" != "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS" ]; then
 fi
 
 echo "Restarting persistent beanstalkd container for max-job-size check..."
-docker stop -t 15 "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
-docker rm "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
+harness_docker stop -t 15 "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
+harness_docker rm "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" > /dev/null
 MAX_JOB_SIZE_REPLAY_PORT=$(start_beanstalkd \
     --name "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" \
     --volume "$MAX_JOB_SIZE_REPLAY_VOLUME:/data" \
@@ -1947,10 +2073,26 @@ if [ "$MAX_JOB_SIZE_REPLAY_JOBS" != "$EXPECTED_MAX_JOB_SIZE_REPLAY_JOBS" ]; then
     exit 1
 fi
 
-if docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1 | grep -q "Errors reading one or more WAL files"; then
+if harness_docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1 | grep -q "Errors reading one or more WAL files"; then
     echo "FAIL: restart reported a WAL read error for max-job-size jobs:"
-    docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1
+    harness_docker logs "$MAX_JOB_SIZE_REPLAY_CONTAINER_NAME" 2>&1
     exit 1
 fi
 
 echo "PASS: jobs at max-job-size survive a container restart."
+}
+
+PORT=""
+# Direct calls preserve errexit and keep the held client owned by this shell.
+while read -r case_name case_function case_fixture; do
+    if [ -n "$SELECTED_TEST" ] && [ "$case_name" != "$SELECTED_TEST" ]; then
+        continue
+    fi
+    echo "Running test: $case_name"
+    if [ "$case_fixture" = shared ] && [ -z "${PORT:-}" ]; then
+        PORT=$(start_beanstalkd --name "$CONTAINER_NAME")
+    fi
+    "$case_function"
+done <<EOF
+$CASE_REGISTRY
+EOF

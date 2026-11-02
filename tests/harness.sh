@@ -2,6 +2,10 @@
 # Shared test harness lifecycle helper module for resource isolation,
 # scratch directory management, and assertions across meta-tests.
 
+harness_docker() {
+    "${HARNESS_DOCKER_CMD:-docker}" "$@"
+}
+
 harness_init() {
     _harness_prefix="${1:-test-run}"
 
@@ -30,17 +34,17 @@ harness_init() {
 
 harness_cleanup() {
     if [ -n "${OWNER_LABEL:-}" ]; then
-        if command -v docker >/dev/null 2>&1; then
+        if command -v "${HARNESS_DOCKER_CMD:-docker}" >/dev/null 2>&1; then
             harness_cleanup_receipt
-            _owned_containers=$(docker ps -aq --filter "label=$OWNER_LABEL" 2>/dev/null || true)
+            _owned_containers=$(harness_docker ps -aq --filter "label=$OWNER_LABEL" 2>/dev/null || true)
             for _owned in $_owned_containers; do
                 [ -n "$_owned" ] || continue
-                docker rm -fv "$_owned" >/dev/null 2>&1 || true
+                harness_docker rm -fv "$_owned" >/dev/null 2>&1 || true
             done
-            _owned_volumes=$(docker volume ls -q --filter "label=$OWNER_LABEL" 2>/dev/null || true)
+            _owned_volumes=$(harness_docker volume ls -q --filter "label=$OWNER_LABEL" 2>/dev/null || true)
             for _owned in $_owned_volumes; do
                 [ -n "$_owned" ] || continue
-                docker volume rm -f "$_owned" >/dev/null 2>&1 || true
+                harness_docker volume rm -f "$_owned" >/dev/null 2>&1 || true
             done
         fi
     fi
@@ -55,7 +59,7 @@ harness_cleanup() {
 # The file crosses process boundaries and is retained unchanged by verification.
 harness_record_container() {
     printf 'container %s\n' "$1" >>"$RESOURCE_RECEIPT"
-    _receipt_mounts=$(docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Destination}} {{.Name}}{{"\n"}}{{end}}{{end}}' "$1") || return 1
+    _receipt_mounts=$(harness_docker inspect --format='{{range .Mounts}}{{if eq .Type "volume"}}{{.Destination}} {{.Name}}{{"\n"}}{{end}}{{end}}' "$1") || return 1
     shift
     for _receipt_destination do
         _receipt_found=false
@@ -76,7 +80,7 @@ EOF
 
 # Explicit named volumes require this invocation's label as ownership evidence.
 harness_record_volume() {
-    _receipt_owner=$(docker volume inspect --format "{{index .Labels \"${OWNER_LABEL%%=*}\"}}" "$1") || return 1
+    _receipt_owner=$(harness_docker volume inspect --format "{{index .Labels \"${OWNER_LABEL%%=*}\"}}" "$1") || return 1
     if [ "$_receipt_owner" != "${OWNER_LABEL#*=}" ]; then
         echo "FAIL: refusing to record unowned volume $1." >&2
         return 1
@@ -88,7 +92,7 @@ harness_record_volume() {
 harness_assert_resources_gone() {
     _receipt_result=0
     while read -r _receipt_kind _receipt_id; do
-        if docker "$_receipt_kind" inspect "$_receipt_id" >/dev/null 2>&1; then
+        if harness_docker "$_receipt_kind" inspect "$_receipt_id" >/dev/null 2>&1; then
             echo "FAIL: leaked $_receipt_kind $_receipt_id." >&2
             _receipt_result=1
         fi
@@ -103,8 +107,8 @@ harness_cleanup_receipt() {
         while read -r _receipt_kind _receipt_id; do
             [ "$_receipt_kind" = "$_receipt_type" ] || continue
             case "$_receipt_kind" in
-                container) docker rm -fv "$_receipt_id" >/dev/null 2>&1 || true ;;
-                volume) docker volume rm -f "$_receipt_id" >/dev/null 2>&1 || true ;;
+                container) harness_docker rm -fv "$_receipt_id" >/dev/null 2>&1 || true ;;
+                volume) harness_docker volume rm -f "$_receipt_id" >/dev/null 2>&1 || true ;;
             esac
         done <"$RESOURCE_RECEIPT"
     done
@@ -116,7 +120,7 @@ assert_loopback_port() {
         echo "FAIL: assert_loopback_port requires a container name." >&2
         return 1
     fi
-    host_ips=$(docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$loopback_container" 2>/dev/null || true)
+    host_ips=$(harness_docker inspect --format='{{range (index .NetworkSettings.Ports "11300/tcp")}}{{.HostIp}}{{"\n"}}{{end}}' "$loopback_container" 2>/dev/null || true)
     if [ -z "$host_ips" ]; then
         echo "FAIL: $loopback_container did not publish port 11300." >&2
         return 1

@@ -6,7 +6,7 @@ set -eu
 # while that check is running must survive, and the check must still pass.
 
 IMAGE="${1:-jonbaldie/beanstalkd:latest}"
-REAL_DOCKER=$(command -v docker)
+REAL_DOCKER=$(command -v "${DOCKER_CMD:-docker}")
 if [ -z "$REAL_DOCKER" ]; then
     echo "FAIL: real docker is required by test_volume_isolation.sh but was not found in PATH."
     exit 1
@@ -25,30 +25,32 @@ if "$REAL_DOCKER" volume inspect "$MARKER_VOLUME" >/dev/null 2>&1; then
     exit 1
 fi
 
-cat >"$BIN_DIR/docker" <<EOF
+cat >"$BIN_DIR/docker" <<'EOF'
 #!/usr/bin/env sh
 set -eu
-REAL="$REAL_DOCKER"
-MARKER="$MARKER_VOLUME"
-LABEL="$OWNER_LABEL"
+REAL="$ISOLATION_DOCKER_CMD"
+MARKER="$ISOLATION_MARKER_VOLUME"
+LABEL="$ISOLATION_OWNER_LABEL"
 
-if [ "\${1:-}" = rm ] && [ "\${2:-}" = -f ]; then
-    for arg in "\$@"; do
-        case "\$arg" in
+if [ "${1:-}" = rm ] && [ "${2:-}" = -f ]; then
+    for arg in "$@"; do
+        case "$arg" in
             beanstalkd-volume-leak-test-*)
-                "\$REAL" volume create --label "\$LABEL" "\$MARKER" >/dev/null
+                "$REAL" volume create --label "$LABEL" "$MARKER" >/dev/null
                 break
                 ;;
         esac
     done
 fi
 
-exec "\$REAL" "\$@"
+exec "$REAL" "$@"
 EOF
 chmod +x "$BIN_DIR/docker"
 
 set +e
-PATH="$BIN_DIR:$PATH" ./test.sh "$IMAGE" >"$OUTPUT_FILE" 2>&1
+ISOLATION_DOCKER_CMD="$REAL_DOCKER" ISOLATION_MARKER_VOLUME="$MARKER_VOLUME" \
+ISOLATION_OWNER_LABEL="$OWNER_LABEL" \
+./test.sh --test volume_leak --docker-cmd "$BIN_DIR/docker" "$IMAGE" >"$OUTPUT_FILE" 2>&1
 RC=$?
 set -e
 
