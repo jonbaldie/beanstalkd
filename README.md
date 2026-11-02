@@ -18,6 +18,13 @@ docker run -d --name beanstalkd -p 11300:11300 \
   jonbaldie/beanstalkd:latest beanstalkd -b /data
 ```
 
+### Upstream patches
+
+`patches/series` lists every patch once in application order. Run `make check-patches`
+to download and checksum the pinned source and apply the series without Docker
+or compilation. `./test_patch_series.sh` checks inventory and application failures.
+The image build and `make test-ct` use the same source preparation script.
+
 ### Upstream C tests
 
 Run `make test-ct` without Docker. It requires a C compiler, make, patch, curl,

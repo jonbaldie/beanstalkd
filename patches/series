@@ -1,0 +1,13 @@
+gcc15.patch
+kick-bound.patch
+pause-tube-delimiter.patch
+put-oversize-trailing-garbage.patch
+quit-prefix.patch
+release-wal-persistence.patch
+replay-bury-count.patch
+replay-max-job-size.patch
+reserve-job-wal-persistence.patch
+reserve-timeout-bound.patch
+split-buffer-hang.patch
+ttr-expiry-tick-boundary.patch
+ttr-timeout-wal-persistence.patch

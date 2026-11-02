@@ -36,16 +36,7 @@
 # limit (issue #82). No upstream
 # release fixes these yet, so the
 # published daemon is built here from the pinned upstream source with
-# packaging-level patches (patches/kick-bound.patch,
-# patches/reserve-timeout-bound.patch, patches/split-buffer-hang.patch,
-# patches/pause-tube-delimiter.patch, patches/quit-prefix.patch,
-# patches/put-oversize-trailing-garbage.patch,
-# patches/reserve-job-wal-persistence.patch,
-# patches/release-wal-persistence.patch,
-# patches/replay-bury-count.patch,
-# patches/ttr-expiry-tick-boundary.patch,
-# patches/ttr-timeout-wal-persistence.patch,
-# patches/replay-max-job-size.patch) that validate bounds, require
+# packaging-level patches listed in patches/series that validate bounds, require
 # command delimiters, preserve split line terminators, reject malformed quit
 # prefixes, reject malformed oversize puts before entering bit-bucket mode,
 # persist reserve-job state transitions, delay-0 releases, and TTR expiries to
