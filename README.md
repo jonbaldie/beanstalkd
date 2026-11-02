@@ -18,6 +18,61 @@ docker run -d --name beanstalkd -p 11300:11300 \
   jonbaldie/beanstalkd:latest beanstalkd -b /data
 ```
 
+### Integration test CLI
+
+Run `./test.sh [--test NAME] [--docker-cmd EXECUTABLE] [IMAGE]` from the
+repository root. With no selector, the runner executes all cases in the order
+shown by `./test.sh --help`. `IMAGE` defaults to `jonbaldie/beanstalkd:latest`.
+Options can precede or follow the image. `--` ends option parsing.
+
+`--test NAME` executes one case and its required fixtures. Protocol cases share
+one daemon during a full run. A selected metadata case starts no daemon.
+Persistence cases create their own labelled containers and volumes.
+
+| Name | Check |
+| --- | --- |
+| `stats` | Daemon readiness and loopback port binding |
+| `non_root` | Daemon runs as an unprivileged user |
+| `install_artifact` | Install script absent from filesystem and layers |
+| `expose` | Image declares port 11300 |
+| `image_size` | Image stays within 20 MB |
+| `kick_bounds` | Malformed kick bounds preserve queue state |
+| `persistence` | Job survives restart on a named volume |
+| `volume_leak` | Default run attaches no anonymous volume |
+| `reserve_timeout_bounds` | Malformed reserve timeouts preserve queue state |
+| `split_buffer` | Split command terminators preserve stream synchronization |
+| `pause_tube_delimiter` | Pause command requires its delimiter |
+| `quit_prefix` | Malformed quit prefixes are rejected |
+| `put_oversize_trailing_garbage` | Malformed oversized puts do not hang |
+| `reserve_job_persistence` | Reserved jobs recover across restart |
+| `release_persistence` | Release preserves priority and counters |
+| `bury_replay` | Restart preserves the bury counter |
+| `ttr_timeout_persistence` | Restart preserves the timeout counter |
+| `max_job_size_replay` | Maximum-size jobs survive WAL replay |
+
+`--docker-cmd` overrides `DOCKER_CMD`, which defaults to `docker` when unset or
+empty. The value is one executable name or path, including paths with spaces.
+Arguments and shell expressions are not evaluated. Use an executable wrapper
+script when you need extra Docker arguments. The configured executable handles
+all runner Docker operations, including diagnostics and cleanup.
+
+```sh
+./test.sh --test persistence local/beanstalkd:dev
+DOCKER_CMD='/tmp/docker wrapper' ./test.sh --test volume_leak
+./test.sh --docker-cmd '/tmp/docker wrapper' --test stats local/beanstalkd:dev
+```
+
+Unknown names, unknown options, missing or empty values, repeated `--test` or
+`--docker-cmd` options, and extra image arguments fail before Docker operations
+or scratch-directory creation.
+Invalid CLI input exits with status 2. `--help` requires neither Docker nor Python.
+
+`python3 tests/test_runner_cli.py` checks selection, order, command precedence,
+and teardown using deterministic process doubles without Docker. The real
+integration cases retain their protocol assertions. `make test` builds `IMAGE`,
+runs these CLI checks and the targeted resource meta-tests, then runs the full
+integration suite once.
+
 ### Upstream patches
 
 `patches/series` lists every patch once in application order. Run `make check-patches`

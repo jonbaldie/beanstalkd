@@ -9,11 +9,10 @@ OUTPUT_FILE="$SCRATCH_DIR/output"
 mkdir "$BIN_DIR"
 
 ln -s "$(command -v sh)" "$BIN_DIR/sh"
-ln -s /usr/bin/true "$BIN_DIR/docker"
 ln -s /usr/bin/true "$BIN_DIR/sleep"
 
 set +e
-PATH="$BIN_DIR" ./test.sh >"$OUTPUT_FILE" 2>&1
+PATH="$BIN_DIR" ./test.sh --test stats --docker-cmd /usr/bin/true >"$OUTPUT_FILE" 2>&1
 RC=$?
 set -e
 

@@ -23,7 +23,7 @@ else
 fi
 
 set +e
-./test.sh "$IMAGE" >"$OUTPUT_FILE" 2>&1
+./test.sh --test stats "$IMAGE" >"$OUTPUT_FILE" 2>&1
 RC=$?
 set -e
 

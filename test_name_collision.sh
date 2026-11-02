@@ -17,21 +17,30 @@ harness_init "name-collision"
 IMAGE="${1:-jonbaldie/beanstalkd:latest}"
 OUTPUT_FILE="$SCRATCH_DIR/output"
 
+check_collision() {
 set +e
 sh -c '
     image="$1"
     owner_label="$2"
+    selector="$3"
+    case "$selector" in
+        stats) marker="beanstalkd-test-$$" ;;
+        persistence) marker="beanstalkd-persistence-test-$$" ;;
+    esac
     docker volume create --label "$owner_label" "beanstalkd-persistence-test-$$" >/dev/null
-    docker run -d --label "$owner_label" --name "beanstalkd-test-$$" --entrypoint sleep "$image" 300 >/dev/null
-    exec ./test.sh "$image"
-' sh "$IMAGE" "$OWNER_LABEL" >"$OUTPUT_FILE" 2>&1 &
+    docker run -d --label "$owner_label" --name "$marker" --entrypoint sleep "$image" 300 >/dev/null
+    exec ./test.sh --test "$selector" "$image"
+' sh "$IMAGE" "$OWNER_LABEL" "$1" >"$OUTPUT_FILE" 2>&1 &
 COLLIDING_PID=$!
 wait "$COLLIDING_PID"
 RC=$?
 set -e
 
 MARKER_VOLUME="beanstalkd-persistence-test-$COLLIDING_PID"
-MARKER_CONTAINER="beanstalkd-test-$COLLIDING_PID"
+case "$1" in
+    stats) MARKER_CONTAINER="beanstalkd-test-$COLLIDING_PID" ;;
+    persistence) MARKER_CONTAINER="beanstalkd-persistence-test-$COLLIDING_PID" ;;
+esac
 
 FAILED=0
 
@@ -56,3 +65,7 @@ if [ "$FAILED" -ne 0 ]; then
 fi
 
 echo "PASS: test.sh neither adopts nor deletes pre-existing resources whose names collide with its PID."
+}
+
+check_collision stats
+check_collision persistence

@@ -9,20 +9,25 @@ REAL_DOCKER=$(command -v docker)
 harness_init receipt-regression
 FOREIGN="beanstalkd-foreign-$RUN_ID"
 mkdir "$SCRATCH_DIR/bin"
-cat >"$SCRATCH_DIR/bin/docker" <<EOF
+cat >"$SCRATCH_DIR/bin/docker" <<'EOF'
 #!/usr/bin/env sh
 set -eu
-if [ "\${1:-}" = create ]; then
-    "$REAL_DOCKER" volume create --label "$OWNER_LABEL" "$FOREIGN" >/dev/null
+printf '%s\n' "$*" >>"$RECEIPTS_COMMAND_LOG"
+if [ "${1:-}" = create ]; then
+    "$RECEIPTS_DOCKER_CMD" volume create --label "$RECEIPTS_OWNER_LABEL" "$RECEIPTS_FOREIGN_VOLUME" >/dev/null
 fi
-exec "$REAL_DOCKER" "\$@"
+exec "$RECEIPTS_DOCKER_CMD" "$@"
 EOF
 chmod +x "$SCRATCH_DIR/bin/docker"
-if ! PATH="$SCRATCH_DIR/bin:$PATH" ./test_cleanup.sh "$IMAGE" >"$SCRATCH_DIR/output" 2>&1; then
+if ! RECEIPTS_DOCKER_CMD="$REAL_DOCKER" RECEIPTS_OWNER_LABEL="$OWNER_LABEL" \
+    RECEIPTS_FOREIGN_VOLUME="$FOREIGN" RECEIPTS_COMMAND_LOG="$SCRATCH_DIR/commands" \
+    DOCKER_CMD="$SCRATCH_DIR/bin/docker" ./test_cleanup.sh "$IMAGE" >"$SCRATCH_DIR/output" 2>&1; then
     cat "$SCRATCH_DIR/output"
     echo 'FAIL: concurrent foreign volume caused cleanup verification to fail.'
     exit 1
 fi
+grep -q '^container inspect ' "$SCRATCH_DIR/commands"
+grep -q '^volume inspect ' "$SCRATCH_DIR/commands"
 "$REAL_DOCKER" volume inspect "$FOREIGN" >/dev/null
 printf '%s\n' 'PASS: concurrent foreign volume survives cleanup verification.'
 
