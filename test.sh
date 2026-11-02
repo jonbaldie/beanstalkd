@@ -188,6 +188,69 @@ start_beanstalkd() {
     printf '%s\n' "$provision_port"
 }
 
+persistent_client_stop() {
+    if [ -n "${PERSIST_CLIENT_PID:-}" ]; then
+        kill "$PERSIST_CLIENT_PID" 2>/dev/null || true
+        wait "$PERSIST_CLIENT_PID" 2>/dev/null || true
+        PERSIST_CLIENT_PID=""
+    fi
+}
+
+persistent_cleanup() {
+    persistent_client_stop
+    harness_cleanup
+}
+trap persistent_cleanup EXIT
+
+persistent_start() {
+    PERSIST_NAME="$1"
+    PERSIST_VOLUME="$2"
+    PERSIST_START_CALLBACK="$3"
+    if docker volume inspect "$PERSIST_VOLUME" > /dev/null 2>&1; then
+        echo "FAIL: volume $PERSIST_VOLUME already exists; refusing to adopt a volume this run did not create." >&2
+        return 1
+    fi
+    docker volume create --label "$OWNER_LABEL" "$PERSIST_VOLUME" > /dev/null || return 1
+    PERSIST_PORT=$("$PERSIST_START_CALLBACK") || return 1
+}
+
+persistent_reserved() {
+    python3 - "$1" <<'PY'
+import socket
+import sys
+
+with socket.create_connection(("localhost", int(sys.argv[1])), timeout=5) as sock:
+    sock.sendall(b"stats-job 3\r\n")
+    stream = sock.makefile("rb")
+    header = stream.readline()
+    if not header.startswith(b"OK "):
+        raise SystemExit("stats-job 3 failed: %r" % header)
+    body = stream.read(int(header.split()[1]) + 2)
+    if b"state: reserved" not in body.splitlines():
+        raise SystemExit("stats-job 3 is not reserved: %r" % body)
+PY
+}
+
+persistent_restart() {
+    if [ -n "${PERSIST_CLIENT_PID:-}" ]; then
+        persistent_reserved "$PERSIST_PORT" || return 1
+        echo "PASS: stats-job 3 reports state: reserved immediately before stop."
+    fi
+    docker stop -t 15 "$PERSIST_NAME" > /dev/null || return 1
+    if [ -n "${PERSIST_CLIENT_PID:-}" ]; then
+        kill "$PERSIST_CLIENT_PID" 2>/dev/null || true
+        persistent_status=0
+        wait "$PERSIST_CLIENT_PID" || persistent_status=$?
+        PERSIST_CLIENT_PID=""
+        if [ "$persistent_status" -ne 0 ] && [ "$persistent_status" -ne 143 ]; then
+            echo "FAIL: held client exited with status $persistent_status." >&2
+            return 1
+        fi
+    fi
+    docker rm "$PERSIST_NAME" > /dev/null || return 1
+    PERSIST_PORT=$("$PERSIST_START_CALLBACK") || return 1
+}
+
 # ---- Test 1: beanstalkd responds to the stats command on the mapped host port ----
 PORT=$(start_beanstalkd --name "$CONTAINER_NAME")
 
@@ -400,15 +463,12 @@ echo "PASS: malformed kick bounds return BAD_FORMAT and the queue is unmutated."
 # directory so an unprivileged daemon can write its WAL there.
 
 echo "Checking persistence on a Docker-managed named volume..."
-if docker volume inspect "$PERSISTENCE_VOLUME" > /dev/null 2>&1; then
-    echo "FAIL: volume $PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
-    exit 1
-fi
-docker volume create --label "$OWNER_LABEL" "$PERSISTENCE_VOLUME" > /dev/null
-PERSISTENCE_PORT=$(start_beanstalkd \
-    --name "$PERSISTENCE_CONTAINER_NAME" \
-    --volume "$PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data)
+start_persistence_fixture() {
+    start_beanstalkd --name "$PERSIST_NAME" \
+        --volume "$PERSIST_VOLUME:/data" -- beanstalkd -b /data
+}
+persistent_start "$PERSISTENCE_CONTAINER_NAME" "$PERSISTENCE_VOLUME" start_persistence_fixture
+PERSISTENCE_PORT="$PERSIST_PORT"
 
 put_persistent_job() {
     python3 - "$1" <<'PY'
@@ -447,12 +507,8 @@ fi
 sleep 1
 
 echo "Restarting persistent beanstalkd container..."
-docker stop -t 15 "$PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker rm "$PERSISTENCE_CONTAINER_NAME" > /dev/null
-PERSISTENCE_PORT=$(start_beanstalkd \
-    --name "$PERSISTENCE_CONTAINER_NAME" \
-    --volume "$PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data)
+persistent_restart
+PERSISTENCE_PORT="$PERSIST_PORT"
 
 reserve_persistent_job() {
     python3 - "$1" <<'PY'
@@ -1146,16 +1202,12 @@ echo "PASS: malformed oversize put commands return BAD_FORMAT and preserve strea
 
 echo "Checking reserve-job WAL persistence across container restart..."
 
-if docker volume inspect "$RESERVE_JOB_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
-    echo "FAIL: volume $RESERVE_JOB_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
-    exit 1
-fi
-docker volume create --label "$OWNER_LABEL" "$RESERVE_JOB_PERSISTENCE_VOLUME" > /dev/null
-
-RESERVE_JOB_PORT=$(start_beanstalkd \
-    --name "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$RESERVE_JOB_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
+start_reserve_job_fixture() {
+    start_beanstalkd --name "$PERSIST_NAME" \
+        --volume "$PERSIST_VOLUME:/data" -- beanstalkd -b /data -f 0
+}
+persistent_start "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" "$RESERVE_JOB_PERSISTENCE_VOLUME" start_reserve_job_fixture
+RESERVE_JOB_PORT="$PERSIST_PORT"
 
 setup_reserve_job_persistence() {
     python3 - "$1" <<'PY'
@@ -1221,7 +1273,7 @@ if send_cmd(s, b"release 2 0 0\r\n") != b"RELEASED\r\n":
 send_cmd(s, b"use t3\r\n")
 send_cmd(s, b"watch t3\r\n")
 send_cmd(s, b"ignore t2\r\n")
-if send_cmd(s, b"put 0 0 0 5\r\njob03\r\n") != b"INSERTED 3\r\n":
+if send_cmd(s, b"put 0 0 3600 5\r\njob03\r\n") != b"INSERTED 3\r\n":
     raise SystemExit(1)
 if send_cmd(s, b"reserve\r\n") != b"RESERVED 3 5\r\n":
     raise SystemExit(1)
@@ -1229,12 +1281,6 @@ read_bytes(s, 7)
 if send_cmd(s, b"bury 3 0\r\n") != b"BURIED\r\n":
     raise SystemExit(1)
 
-s_inflight = socket.create_connection(("localhost", port), timeout=5)
-s_inflight.settimeout(5)
-if send_cmd(s_inflight, b"reserve-job 3\r\n") != b"RESERVED 3 5\r\n":
-    raise SystemExit(1)
-read_bytes(s_inflight, 7)
-# Leave s_inflight open so job 3 is in-flight when container stops
 PY
 }
 
@@ -1244,13 +1290,40 @@ if ! setup_reserve_job_persistence "$RESERVE_JOB_PORT"; then
     exit 1
 fi
 
+persistent_hold_reserved() {
+    python3 - "$1" "$SCRATCH_DIR/reserve-job-ready" <<'PY' &
+import os
+import socket
+import sys
+import threading
+
+with socket.create_connection(("localhost", int(sys.argv[1])), timeout=5) as sock:
+    sock.sendall(b"reserve-job 3\r\n")
+    stream = sock.makefile("rb")
+    if stream.readline() != b"RESERVED 3 5\r\n" or stream.read(7) != b"job03\r\n":
+        raise SystemExit("reserve-job 3 failed")
+    with open(sys.argv[2] + ".tmp", "w") as ready:
+        ready.write("ready\n")
+    os.replace(sys.argv[2] + ".tmp", sys.argv[2])
+    threading.Event().wait(120)
+    raise SystemExit("held client timed out")
+PY
+    PERSIST_CLIENT_PID=$!
+    ready_attempt=0
+    while [ ! -f "$SCRATCH_DIR/reserve-job-ready" ]; do
+        if ! kill -0 "$PERSIST_CLIENT_PID" 2>/dev/null || [ "$ready_attempt" -ge 15 ]; then
+            echo "FAIL: held reserve-job client did not become ready." >&2
+            return 1
+        fi
+        sleep 1
+        ready_attempt=$((ready_attempt + 1))
+    done
+}
+persistent_hold_reserved "$RESERVE_JOB_PORT"
+
 echo "Restarting persistent beanstalkd container for reserve-job check..."
-docker stop -t 15 "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" > /dev/null
-docker rm "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" > /dev/null
-RESERVE_JOB_PORT=$(start_beanstalkd \
-    --name "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$RESERVE_JOB_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
+persistent_restart
+RESERVE_JOB_PORT="$PERSIST_PORT"
 
 verify_reserve_job_persistence() {
     python3 - "$1" <<'PY'
@@ -1332,8 +1405,10 @@ else:
     stats = send_cmd(s, b"stats-job 3\r\n")
     if stats.startswith(b"OK "):
         stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
-        if "state: ready" not in stats_body:
+        if "state: ready" not in stats_body.splitlines():
             failures.append("job 3 stats-job state is not ready: %s" % stats_body)
+    else:
+        failures.append("job 3 stats-job returned %r (expected OK)" % stats)
 
 # Verify buried and delayed queues are empty
 for tube in [b"default", b"t1", b"t2", b"t3"]:
