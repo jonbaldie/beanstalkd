@@ -3,6 +3,8 @@
 These reports record user-facing journeys exercised against the packaged
 beanstalkd image and link to replay evidence.
 
+- [2026-11-04 worker and persistence pass](2026-11-04-worker-recovery.md) —
+  tube isolation, worker recovery, and restart persistence; no confirmed bugs.
 - [2026-10-27 queue and recovery pass](2026-10-27-queue-recovery.md) —
   priority, delayed and buried jobs, and restart recovery; no confirmed bugs.
 - [2026-10-24 AFK pass](2026-10-24-beanstalkd-afk.md) — paused multi-tube
