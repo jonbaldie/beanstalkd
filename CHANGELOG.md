@@ -10,8 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Apply daemon patches in the order declared by `patches/series`, with inventory
   validation shared by the image build and standalone C tests (#57, #99).
-- Keep the `reserve-job` client connected across a daemon restart in the
-  persistence regression test (#64, #100).
+- Keep the `reserve-job` client connected until daemon shutdown in the
+  persistence restart regression test (#64, #100).
 - Select integration cases with `test.sh --test` and route Docker operations
   through an injectable command (#52, #101).
 - Record worker recovery exploratory testing and evidence (#102).
