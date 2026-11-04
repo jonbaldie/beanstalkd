@@ -1,0 +1,276 @@
+Registered container and volume beanstalk-explore-20261104-1626525, image local/beanstalk-explore-20261104-1626525:explore, builder beanstalk-explore-20261104-1626525-builder
+#0 building with "beanstalk-explore-20261104-1626525-builder" instance using docker-container driver
+
+#1 [internal] booting buildkit
+#1 pulling image moby/buildkit:buildx-stable-1
+#1 pulling image moby/buildkit:buildx-stable-1 5.7s done
+#1 creating container buildx_buildkit_beanstalk-explore-20261104-1626525-builder0
+#1 creating container buildx_buildkit_beanstalk-explore-20261104-1626525-builder0 1.7s done
+#1 DONE 7.4s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 4.35kB done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/alpine:latest
+#3 DONE 1.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 37.49kB 0.0s done
+#5 DONE 0.0s
+
+#6 [build 1/5] FROM docker.io/library/alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+#6 resolve docker.io/library/alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a 0.0s done
+#6 sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 1.05MB / 3.85MB 0.2s
+#6 sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 3.85MB / 3.85MB 0.2s done
+#6 extracting sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788
+#6 extracting sha256:7b229517ed222597277036d94892173207d01a731ab3a88eeb1de2e963a2c788 0.2s done
+#6 DONE 0.4s
+
+#7 [build 2/5] RUN apk add --no-cache gcc musl-dev make patch curl
+#7 0.833 ( 1/24) Installing brotli-libs (1.2.1-r0)
+#7 0.866 ( 2/24) Installing c-ares (1.34.9-r0)
+#7 0.877 ( 3/24) Installing libunistring (1.4.2-r0)
+#7 0.907 ( 4/24) Installing libidn2 (2.3.8-r0)
+#7 0.917 ( 5/24) Installing nghttp2-libs (1.70.0-r0)
+#7 0.926 ( 6/24) Installing libpsl (0.21.5-r3)
+#7 0.944 ( 7/24) Installing zstd-libs (1.5.7-r2)
+#7 0.962 ( 8/24) Installing libcurl (8.23.0-r0)
+#7 0.983 ( 9/24) Installing curl (8.23.0-r0)
+#7 0.996 (10/24) Installing libgcc (15.2.0-r5)
+#7 1.009 (11/24) Installing jansson (2.15.0-r0)
+#7 1.017 (12/24) Installing libstdc++ (15.2.0-r5)
+#7 1.062 (13/24) Installing binutils (2.45.1-r1)
+#7 1.179 (14/24) Installing libgcc-static (15.2.0-r5)
+#7 1.222 (15/24) Installing libgomp (15.2.0-r5)
+#7 1.236 (16/24) Installing libatomic (15.2.0-r5)
+#7 1.243 (17/24) Installing gmp (6.3.0-r4)
+#7 1.255 (18/24) Installing isl26 (0.26-r2)
+#7 1.284 (19/24) Installing mpfr4 (4.2.2-r0)
+#7 1.297 (20/24) Installing mpc1 (1.3.1-r1)
+#7 1.305 (21/24) Installing gcc (15.2.0-r5)
+#7 ...
+
+#8 [stage-1 2/3] RUN apk add --no-cache beanstalkd     && apk upgrade --no-cache     && mkdir -p /data     && chown beanstalk:daemon /data
+#8 0.834 (1/1) Installing beanstalkd (1.13-r1)
+#8 0.842   Executing beanstalkd-1.13-r1.pre-install
+#8 0.870 Executing busybox-1.37.0-r31.trigger
+#8 0.880 OK: 8262 KiB in 17 packages
+#8 1.850 Preupgrading:
+#8 1.850 (1/2) Upgrading libapk (3.0.8-r0 -> 3.0.9-r0)
+#8 1.874 (2/2) Upgrading apk-tools (3.0.8-r0 -> 3.0.9-r0)
+#8 1.886 Executing busybox-1.37.0-r31.trigger
+#8 1.962 Continuing with the main upgrade transaction:
+#8 2.714 OK: 8266 KiB in 17 packages
+#8 DONE 2.9s
+
+#7 [build 2/5] RUN apk add --no-cache gcc musl-dev make patch curl
+#7 3.035 (22/24) Installing make (4.4.1-r4)
+#7 3.045 (23/24) Installing musl-dev (1.2.6-r3)
+#7 3.169 (24/24) Installing patch (2.8-r0)
+#7 3.178 Executing busybox-1.37.0-r31.trigger
+#7 3.193 OK: 202.6 MiB in 40 packages
+#7 DONE 3.3s
+
+#9 [build 3/5] COPY patches/ /patches/
+#9 DONE 0.0s
+
+#10 [build 4/5] COPY ct-tests/ /ct-tests/
+#10 DONE 0.0s
+
+#11 [build 5/5] RUN /ct-tests/run.sh /tmp/ct-build     && cp /tmp/ct-build/beanstalkd-1.13/beanstalkd /beanstalkd
+#11 0.123 ct build and diagnostics: /tmp/ct-build
+#11 0.218   % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+#11 0.218                                  Dload  Upload  Total   Spent   Left   Speed
+#11 0.218
+  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0
+#11 0.367
+  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0
+  0      0   0      0   0      0      0      0                              0
+#11 0.663
+  0      0   0      0   0      0      0      0                              0
+100  81234   0  81234   0      0 106.2k      0                              0
+100  81234   0  81234   0      0 106.0k      0                              0
+100  81234   0  81234   0      0 105.9k      0                              0
+#11 0.974 applying gcc15.patch
+#11 0.975 patching file main.c
+#11 0.976 applying kick-bound.patch
+#11 0.977 patching file prot.c
+#11 0.978 applying pause-tube-delimiter.patch
+#11 0.979 patching file prot.c
+#11 0.980 applying put-oversize-trailing-garbage.patch
+#11 0.981 patching file prot.c
+#11 0.982 applying quit-prefix.patch
+#11 0.985 patching file prot.c
+#11 0.987 Hunk #2 succeeded at 1809 (offset -1 lines).
+#11 0.990 applying release-wal-persistence.patch
+#11 0.993 patching file prot.c
+#11 0.995 Hunk #1 succeeded at 1560 (offset -19 lines).
+#11 0.997 applying replay-bury-count.patch
+#11 1.000 patching file prot.c
+#11 1.001 Hunk #1 succeeded at 2323 (offset -29 lines).
+#11 1.003 applying replay-max-job-size.patch
+#11 1.006 patching file file.c
+#11 1.008 applying reserve-job-wal-persistence.patch
+#11 1.009 patching file prot.c
+#11 1.009 Hunk #2 succeeded at 1514 (offset -1 lines).
+#11 1.010 applying reserve-timeout-bound.patch
+#11 1.012 patching file prot.c
+#11 1.012 patch unexpectedly ends in middle of line
+#11 1.012 Hunk #1 succeeded at 1439 with fuzz 1 (offset 2 lines).
+#11 1.013 applying split-buffer-hang.patch
+#11 1.015 patching file prot.c
+#11 1.015 Hunk #1 succeeded at 763 (offset 2 lines).
+#11 1.016 Hunk #2 succeeded at 1975 (offset 23 lines).
+#11 1.016 Hunk #3 succeeded at 2010 (offset 23 lines).
+#11 1.017 applying ttr-expiry-tick-boundary.patch
+#11 1.019 patching file prot.c
+#11 1.020 Hunk #1 succeeded at 1892 (offset 22 lines).
+#11 1.021 applying ttr-timeout-wal-persistence.patch
+#11 1.022 patching file prot.c
+#11 1.036 /bin/sh: pkg-config: not found
+#11 1.052 cc -Wall -Werror -Wformat=2 -g   -c -o linux.o linux.c
+#11 1.139 cc -Wall -Werror -Wformat=2 -g   -c -o conn.o conn.c
+#11 1.254 cc -Wall -Werror -Wformat=2 -g   -c -o file.o file.c
+#11 1.407 cc -Wall -Werror -Wformat=2 -g   -c -o heap.o heap.c
+#11 1.513 cc -Wall -Werror -Wformat=2 -g   -c -o job.o job.c
+#11 1.627 cc -Wall -Werror -Wformat=2 -g   -c -o ms.o ms.c
+#11 1.708 cc -Wall -Werror -Wformat=2 -g   -c -o net.o net.c
+#11 1.818 cc -Wall -Werror -Wformat=2 -g   -c -o primes.o primes.c
+#11 1.847 cc -Wall -Werror -Wformat=2 -g   -c -o prot.o prot.c
+#11 2.232 cc -Wall -Werror -Wformat=2 -g   -c -o serv.o serv.c
+#11 2.297 cc -Wall -Werror -Wformat=2 -g   -c -o time.o time.c
+#11 2.344 cc -Wall -Werror -Wformat=2 -g   -c -o tube.o tube.c
+#11 2.422 cc -Wall -Werror -Wformat=2 -g   -c -o util.o util.c
+#11 2.497 ./verc.sh >vers.c
+#11 2.500 cc -Wall -Werror -Wformat=2 -g   -c -o vers.o vers.c
+#11 2.524 cc -Wall -Werror -Wformat=2 -g   -c -o walg.o walg.c
+#11 2.628 cc -Wall -Werror -Wformat=2 -g   -c -o main.o main.c
+#11 2.726 cc   -o beanstalkd linux.o conn.o file.o heap.o job.o ms.o net.o primes.o prot.o serv.o time.o tube.o util.o vers.o walg.o main.o -lrt
+#11 2.768 /bin/sh: pkg-config: not found
+#11 2.781 cc -Wall -Werror -Wformat=2 -g   -c -o testheap.o testheap.c
+#11 2.901 cc -Wall -Werror -Wformat=2 -g   -c -o testjobs.o testjobs.c
+#11 2.979 cc -Wall -Werror -Wformat=2 -g   -c -o testms.o testms.c
+#11 3.056 cc -Wall -Werror -Wformat=2 -g   -c -o testserv.o testserv.c
+#11 3.444 cc -Wall -Werror -Wformat=2 -g   -c -o testutil.o testutil.c
+#11 3.546 ct/gen testheap.o testjobs.o testms.o testserv.o testutil.o  >ct/_ctcheck.c.part
+#11 3.586 mv ct/_ctcheck.c.part ct/_ctcheck.c
+#11 3.588 cc -Wall -Werror -Wformat=2 -g   -c -o ct/_ctcheck.o ct/_ctcheck.c
+#11 3.624 cc -Wall -Werror -Wformat=2 -g   -c -o ct/ct.o ct/ct.c
+#11 3.764 cc   ct/_ctcheck.o ct/ct.o linux.o conn.o file.o heap.o job.o ms.o net.o primes.o prot.o serv.o time.o tube.o util.o vers.o walg.o testheap.o testjobs.o testms.o testserv.o testutil.o  -lrt -o ct/_ctcheck
+#11 3.807 ct/_ctcheck
+#11 3.808 .................................................................................................................
+#11 15.91
+#11 15.91 PASS
+#11 DONE 16.0s
+
+#12 [stage-1 3/3] COPY --from=build /beanstalkd /usr/bin/beanstalkd
+#12 DONE 0.0s
+
+#13 exporting to oci image format
+#13 exporting layers 0.1s done
+#13 exporting manifest sha256:25cdb0f0f0a7ecb01d5235e033e5870a84482df27594f6d059cd9d92f01d54ba done
+#13 exporting config sha256:0527bdb24e1d722582ef8678f20f4e59814e618a70115ec350703675f0b3b1c7
+#13 exporting config sha256:0527bdb24e1d722582ef8678f20f4e59814e618a70115ec350703675f0b3b1c7 done
+#13 sending tarball
+#13 sending tarball 0.4s done
+#13 DONE 0.5s
+
+#14 importing to docker
+#14 DONE 0.0s
+Journey 1: priority, tube isolation, delete
+$ docker run -d --name beanstalk-explore-20261104-1626525 -p 127.0.0.1::11300 local/beanstalk-explore-20261104-1626525:explore
+ c9c51d70b84ad89c4e3d0d4b0ee154f4f19c6dd0eb4995b12e216d59c31f739c
+$ docker port beanstalk-explore-20261104-1626525 11300/tcp
+ 127.0.0.1:33644
+> use alpha
+< USING alpha
+> put 100 0 30 3 body=b'low'
+< INSERTED 1
+> put 1 0 30 4 body=b'high'
+< INSERTED 2
+> reserve-with-timeout 0
+< TIMED_OUT
+> watch alpha
+< WATCHING 2
+> ignore default
+< WATCHING 1
+> reserve-with-timeout 0
+< RESERVED 2 4
+< body b'high'
+> delete 2
+< DELETED
+> reserve-with-timeout 0
+< RESERVED 1 3
+< body b'low'
+> delete 1
+< DELETED
+> reserve-with-timeout 0
+< TIMED_OUT
+$ docker rm -f -v beanstalk-explore-20261104-1626525
+ beanstalk-explore-20261104-1626525
+Journey 2: disconnect and TTR recovery
+$ docker run -d --name beanstalk-explore-20261104-1626525 -p 127.0.0.1::11300 local/beanstalk-explore-20261104-1626525:explore
+ 4871671a91f75726faa4972b3ca9ab2e748d886283481009e4213ee6725ec4a4
+$ docker port beanstalk-explore-20261104-1626525 11300/tcp
+ 127.0.0.1:33645
+> put 0 0 2 4 body=b'work'
+< INSERTED 1
+> reserve-with-timeout 0
+< RESERVED 1 4
+< body b'work'
+> reserve-with-timeout 1
+< RESERVED 1 4
+< body b'work'
+> release 1 0 0
+< RELEASED
+> reserve-with-timeout 0
+< RESERVED 1 4
+< body b'work'
+> reserve-with-timeout 1
+< RESERVED 1 4
+< body b'work'
+> delete 1
+< DELETED
+> delete 1
+< NOT_FOUND
+$ docker rm -f -v beanstalk-explore-20261104-1626525
+ beanstalk-explore-20261104-1626525
+Journey 3: persistent ready and buried work across restart
+$ docker volume create beanstalk-explore-20261104-1626525
+ beanstalk-explore-20261104-1626525
+$ docker run -d --name beanstalk-explore-20261104-1626525 -p 127.0.0.1::11300 -v beanstalk-explore-20261104-1626525:/data local/beanstalk-explore-20261104-1626525:explore beanstalkd -p 11300 -b /data -f 0
+ ddeb619c7887c53b54d473dd8faa2e001fe8e85589ec0fe024c2d3180984e1b4
+$ docker port beanstalk-explore-20261104-1626525 11300/tcp
+ 127.0.0.1:33646
+> put 0 0 30 5 body=b'ready'
+< INSERTED 1
+> put 0 0 30 6 body=b'buried'
+< INSERTED 2
+> reserve-with-timeout 0
+< RESERVED 1 5
+< body b'ready'
+> bury 1 10
+< BURIED
+$ docker restart beanstalk-explore-20261104-1626525
+ beanstalk-explore-20261104-1626525
+Traceback (most recent call last):
+  File "/home/ubuntu/Code/pstack/.worktrees/beanstalkd-explore-20261104/docs/exploratory-testing/evidence/2026-11-04/journeys.py", line 107, in <module>
+    p = Client(port)
+  File "/home/ubuntu/Code/pstack/.worktrees/beanstalkd-explore-20261104/docs/exploratory-testing/evidence/2026-11-04/journeys.py", line 38, in __init__
+    self.sock = socket.create_connection(('127.0.0.1', port), timeout=3)
+                ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/socket.py", line 870, in create_connection
+    raise exceptions[0]
+  File "/usr/lib/python3.14/socket.py", line 855, in create_connection
+    sock.connect(sa)
+    ~~~~~~~~~~~~^^^^
+ConnectionRefusedError: [Errno 111] Connection refused
+Cleanup verification for beanstalk-explore-20261104-1626525
