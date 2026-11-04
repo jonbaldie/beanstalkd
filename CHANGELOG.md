@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.11] - 2026-11-04
+
+### Changed
+- Apply daemon patches in the order declared by `patches/series`, with inventory
+  validation shared by the image build and standalone C tests (#57, #99).
+- Keep the `reserve-job` client connected across a daemon restart in the
+  persistence regression test (#64, #100).
+- Select integration cases with `test.sh --test` and route Docker operations
+  through an injectable command (#52, #101).
+- Record worker recovery exploratory testing and evidence (#102).
+
 ## [1.0.10] - 2026-10-27
 
 ### Changed
@@ -258,6 +269,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added non-root user `USER beanstalk` to run the daemon with unprivileged permissions.
 - Removed deprecated `MAINTAINER` instruction from `Dockerfile`.
 
+[1.0.11]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.10...v1.0.11
+[1.0.10]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.9...v1.0.10
 [1.0.9]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.8...v1.0.9
 [1.0.8]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.7...v1.0.8
 [1.0.7]: https://github.com/jonbaldie/beanstalkd/compare/v1.0.6...v1.0.7
