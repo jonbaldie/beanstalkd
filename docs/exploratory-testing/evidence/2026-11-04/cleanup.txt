@@ -1,0 +1,26 @@
+2026-11-04T17:38:58Z
+Pass names: beanstalk-explore-20261104-1626525 and beanstalk-explore-20261104-1630035
+
+Containers with pass names:
+
+Volumes with pass names:
+
+Images with pass names:
+
+Builders:
+NAME/NODE     DRIVER/ENDPOINT   STATUS    BUILDKIT   PLATFORMS
+default*      docker
+ \_ default    \_ default       running   v0.26.2    linux/amd64 (+3)
+
+BuildKit image tag:
+
+Recorded allocated ports and any listeners:
+127.0.0.1:33644
+127.0.0.1:33645
+127.0.0.1:33646
+127.0.0.1:33648
+127.0.0.1:33649
+127.0.0.1:33650
+127.0.0.1:33651
+127.0.0.1:33652
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port
