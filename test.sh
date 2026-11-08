@@ -144,39 +144,17 @@ report_container_failure() {
 
 beanstalkd_ok() {
     port="$1"
-    python3 -c "
-import socket, sys
-
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b'\\r\\n'):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError('connection closed before response line')
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError('connection closed before response body')
-        response.extend(chunk)
+    python3 - "$port" <<'PYCLIENT' 2>/dev/null
+import sys
+from tests.beanstalk_client import BeanstalkClient
 
 try:
-    s = socket.create_connection(('localhost', int(sys.argv[1])), timeout=1)
-    s.sendall(b'stats\r\n')
-    d = read_line(s)
-    if not d.startswith(b'OK '):
-        raise RuntimeError('unexpected stats response')
-    read_bytes(s, int(d.split()[1]) + 2)
-    s.sendall(b'quit\r\n')
-    s.close()
-    sys.exit(0)
+    with BeanstalkClient('localhost', int(sys.argv[1]), timeout=1) as client:
+        client.stats()
+        client.send(b'quit\r\n')
 except Exception:
     sys.exit(1)
-" "$port" 2>/dev/null
+PYCLIENT
 }
 
 MAX_RETRIES=15
@@ -312,16 +290,15 @@ persistent_start() {
 
 persistent_reserved() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-with socket.create_connection(("localhost", int(sys.argv[1])), timeout=5) as sock:
-    sock.sendall(b"stats-job 3\r\n")
-    stream = sock.makefile("rb")
-    header = stream.readline()
+with BeanstalkClient("localhost", int(sys.argv[1]), timeout=5) as sock:
+    sock.send(b"stats-job 3\r\n")
+    header = sock.read_line()
     if not header.startswith(b"OK "):
         raise SystemExit("stats-job 3 failed: %r" % header)
-    body = stream.read(int(header.split()[1]) + 2)
+    body = sock.read_exact(int(header.split()[1]) + 2)
     if b"state: reserved" not in body.splitlines():
         raise SystemExit("stats-job 3 is not reserved: %r" % body)
 PY
@@ -449,26 +426,9 @@ test_kick_bounds() {
 
 check_kick_bounds() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete body")
-        response.extend(chunk)
-    return bytes(response)
 
 failures = []
 
@@ -476,77 +436,59 @@ def check(cond, message):
     if not cond:
         failures.append(message)
 
-def stats(sock):
-    sock.sendall(b"stats\r\n")
-    r = read_line(sock)
-    if not r.startswith(b"OK "):
-        return None
-    body = read_bytes(sock, int(r.split()[1]) + 2)
-    out = {}
-    for line in body.split(b"\n"):
-        line = line.strip()
-        if b": " in line:
-            k, v = line.split(b": ", 1)
-            out[k] = v
-    return out
 
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
 
-def cmd(line, body=None):
-    sock.sendall(line)
-    if body is not None:
-        sock.sendall(body)
-    return read_line(sock)
 
 TUBE = b"kick-regression"
-sock.sendall(b"use " + TUBE + b"\r\n"); read_line(sock)
-sock.sendall(b"watch " + TUBE + b"\r\n"); read_line(sock)
-sock.sendall(b"ignore default\r\n"); read_line(sock)
+sock.send(b"use " + TUBE + b"\r\n"); sock.read_line()
+sock.send(b"watch " + TUBE + b"\r\n"); sock.read_line()
+sock.send(b"ignore default\r\n"); sock.read_line()
 
 # --- malformed bound: trailing garbage must be rejected and must not kick ---
-r = cmd(b"put 1 0 60 8\r\n", b"buried-a\r\n")
+r = sock.cmd(b"put 1 0 60 8\r\n", b"buried-a\r\n")
 job_id = r.split()[1]
-r = cmd(b"reserve-with-timeout 0\r\n")
-read_bytes(sock, int(r.split()[2]) + 2)  # RESERVED body
-if cmd(b"bury " + job_id + b" 1\r\n") != b"BURIED\r\n":
+r = sock.cmd(b"reserve-with-timeout 0\r\n")
+sock.read_exact(int(r.split()[2]) + 2)  # RESERVED body
+if sock.cmd(b"bury " + job_id + b" 1\r\n") != b"BURIED\r\n":
     failures.append("setup: bury of first job failed")
 
-if cmd(b"kick 1garbage\r\n") != b"BAD_FORMAT\r\n":
+if sock.cmd(b"kick 1garbage\r\n") != b"BAD_FORMAT\r\n":
     failures.append("kick 1garbage: expected BAD_FORMAT")
-r = cmd(b"peek-ready\r\n")
+r = sock.cmd(b"peek-ready\r\n")
 if r.startswith(b"FOUND"):
-    read_bytes(sock, int(r.split()[2]) + 2)  # drain FOUND body before continuing
+    sock.read_exact(int(r.split()[2]) + 2)  # drain FOUND body before continuing
 if not r.startswith(b"NOT_FOUND"):
     failures.append("kick 1garbage mutated queue: a ready job appeared (got %r)" % r)
 # Remove the residue so later counts are exact; buried jobs may be deleted.
-if cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
+if sock.cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
     failures.append("kick 1garbage: job could not be cleaned up")
 
 # --- malformed bound: negative value must be rejected and must not kick ---
 buried_ids = []
 for body in (b"buried-b\r\n", b"buried-c\r\n"):
-    r = cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
+    r = sock.cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
     job_id = r.split()[1]
-    r = cmd(b"reserve-with-timeout 0\r\n")
-    read_bytes(sock, int(r.split()[2]) + 2)  # RESERVED body
-    cmd(b"bury " + job_id + b" 1\r\n")
+    r = sock.cmd(b"reserve-with-timeout 0\r\n")
+    sock.read_exact(int(r.split()[2]) + 2)  # RESERVED body
+    sock.cmd(b"bury " + job_id + b" 1\r\n")
     buried_ids.append(job_id)
 
-if cmd(b"kick -1\r\n") != b"BAD_FORMAT\r\n":
+if sock.cmd(b"kick -1\r\n") != b"BAD_FORMAT\r\n":
     failures.append("kick -1: expected BAD_FORMAT")
-s = stats(sock)
+s = sock.stats()
 if s is None or s.get(b"current-jobs-ready") != b"0" or s.get(b"current-jobs-buried") != b"2":
     failures.append("kick -1 mutated queue: %r (expected ready=0, buried=2)" % s)
 
 # --- valid non-negative bounds must keep their semantics ---
-if cmd(b"kick 1\r\n") != b"KICKED 1\r\n":
+if sock.cmd(b"kick 1\r\n") != b"KICKED 1\r\n":
     failures.append("valid kick 1: expected KICKED 1")
-r = cmd(b"peek-ready\r\n")
+r = sock.cmd(b"peek-ready\r\n")
 if not r.startswith(b"FOUND "):
     failures.append("valid kick 1: no ready job after kick (got %r)" % r)
 else:
-    body = read_bytes(sock, int(r.split()[2]) + 2)
+    body = sock.read_exact(int(r.split()[2]) + 2)
     if body != b"buried-b\r\n":
         failures.append("valid kick 1: wrong job kicked (body %r)" % body)
 
@@ -581,23 +523,15 @@ PERSISTENCE_PORT="$PERSIST_PORT"
 
 put_persistent_job() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a response")
-        response.extend(chunk)
-    return bytes(response)
 
 try:
-    with socket.create_connection(("localhost", int(sys.argv[1])), timeout=1) as sock:
+    with BeanstalkClient("localhost", int(sys.argv[1]), timeout=1) as sock:
         sock.settimeout(5)
-        sock.sendall(b"put 0 0 60 7\r\npersist\r\n")
-        response = read_line(sock)
+        sock.send(b"put 0 0 60 7\r\npersist\r\n")
+        response = sock.read_line()
         if not response.startswith(b"INSERTED "):
             print("expected INSERTED response, got %r" % response, file=sys.stderr)
             raise SystemExit(2)
@@ -621,36 +555,19 @@ PERSISTENCE_PORT="$PERSIST_PORT"
 
 reserve_persistent_job() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
 
 try:
-    sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=1)
+    sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=1)
 except OSError:
     raise SystemExit(1)
 
 with sock:
     sock.settimeout(5)
-    sock.sendall(b"reserve-with-timeout 2\r\n")
-    response = read_line(sock)
+    sock.send(b"reserve-with-timeout 2\r\n")
+    response = sock.read_line()
     if response.startswith(b"TIMED_OUT"):
         print("expected RESERVED response, got %r" % response, file=sys.stderr)
         raise SystemExit(2)
@@ -658,12 +575,12 @@ with sock:
         print("expected RESERVED response, got %r" % response, file=sys.stderr)
         raise SystemExit(2)
     job_id, body_size = response.split()[1:3]
-    body = read_bytes(sock, int(body_size) + 2)
+    body = sock.read_exact(int(body_size) + 2)
     if body != b"persist\r\n":
         print("expected persisted job body, got %r" % body, file=sys.stderr)
         raise SystemExit(2)
-    sock.sendall(b"delete " + job_id + b"\r\n")
-    response = read_line(sock)
+    sock.send(b"delete " + job_id + b"\r\n")
+    response = sock.read_line()
     if response != b"DELETED\r\n":
         print("expected DELETED response, got %r" % response, file=sys.stderr)
         raise SystemExit(2)
@@ -725,26 +642,9 @@ test_reserve_timeout_bounds() {
 
 check_reserve_timeout_bounds() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete body")
-        response.extend(chunk)
-    return bytes(response)
 
 failures = []
 
@@ -752,36 +652,18 @@ def check(cond, message):
     if not cond:
         failures.append(message)
 
-def stats(sock):
-    sock.sendall(b"stats\r\n")
-    r = read_line(sock)
-    if not r.startswith(b"OK "):
-        return None
-    body = read_bytes(sock, int(r.split()[1]) + 2)
-    out = {}
-    for line in body.split(b"\n"):
-        line = line.strip()
-        if b": " in line:
-            k, v = line.split(b": ", 1)
-            out[k] = v
-    return out
 
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
 
-def cmd(line, body=None):
-    sock.sendall(line)
-    if body is not None:
-        sock.sendall(body)
-    return read_line(sock)
 
 TUBE = b"reserve-timeout-regression"
-sock.sendall(b"use " + TUBE + b"\r\n"); read_line(sock)
-sock.sendall(b"watch " + TUBE + b"\r\n"); read_line(sock)
-sock.sendall(b"ignore default\r\n"); read_line(sock)
+sock.send(b"use " + TUBE + b"\r\n"); sock.read_line()
+sock.send(b"watch " + TUBE + b"\r\n"); sock.read_line()
+sock.send(b"ignore default\r\n"); sock.read_line()
 
 def put_ready_job(body):
-    r = cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
+    r = sock.cmd(b"put 1 0 60 %d\r\n" % (len(body) - 2), body)
     if not r.startswith(b"INSERTED "):
         return None
     return r.split()[1]
@@ -793,27 +675,27 @@ for bound in (b"1garbage", b"0 foo", b"0 ", b"-1", b"99999999999", b""):
     if job_id is None:
         failures.append("setup: put for bound %r failed" % bound)
         continue
-    stats_before = stats(sock)
-    r = cmd(b"reserve-with-timeout " + bound + b"\r\n")
+    stats_before = sock.stats()
+    r = sock.cmd(b"reserve-with-timeout " + bound + b"\r\n")
     check(r == b"BAD_FORMAT\r\n",
           "reserve-with-timeout %r: expected BAD_FORMAT (got %r)" % (bound, r))
     if r.startswith(b"RESERVED"):
         # The buggy path reserves the job; drain its body so the command
         # stream stays in sync for the remaining assertions.
-        read_bytes(sock, int(r.split()[2]) + 2)
-    stats_after = stats(sock)
+        sock.read_exact(int(r.split()[2]) + 2)
+    stats_after = sock.stats()
     if stats_before is not None and stats_after is not None:
         for key in (b"current-jobs-ready", b"current-jobs-reserved", b"current-jobs-buried"):
             check(stats_after.get(key) == stats_before.get(key),
                   "reserve-with-timeout %r mutated %s: %r -> %r"
                   % (bound, key, stats_before.get(key), stats_after.get(key)))
-    r = cmd(b"peek-ready\r\n")
+    r = sock.cmd(b"peek-ready\r\n")
     if r.startswith(b"FOUND"):
-        read_bytes(sock, int(r.split()[2]) + 2)  # drain FOUND body before continuing
+        sock.read_exact(int(r.split()[2]) + 2)  # drain FOUND body before continuing
     if not r.startswith(b"FOUND " + job_id + b" "):
         failures.append("reserve-with-timeout %r: job %s left the ready queue (got %r)"
                         % (bound, job_id, r))
-    if cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
+    if sock.cmd(b"delete " + job_id + b"\r\n") != b"DELETED\r\n":
         failures.append("reserve-with-timeout %r: job %s could not be cleaned up"
                         % (bound, job_id))
 
@@ -821,22 +703,22 @@ for bound in (b"1garbage", b"0 foo", b"0 ", b"-1", b"99999999999", b""):
 # The RESERVED line reports the declared body size (10 for "valid-zero",
 # 9 for "valid-one" — the body's trailing CRLF is the put terminator).
 job_id = put_ready_job(b"valid-zero\r\n")
-r = cmd(b"reserve-with-timeout 0\r\n")
+r = sock.cmd(b"reserve-with-timeout 0\r\n")
 if r != b"RESERVED " + job_id + b" 10\r\n":
     failures.append("valid reserve-with-timeout 0: expected RESERVED %s 10 (got %r)"
                     % (job_id, r))
 else:
-    read_bytes(sock, 10 + 2)  # drain the reserved body plus CRLF
-if cmd(b"touch " + job_id + b"\r\n") != b"TOUCHED\r\n":
+    sock.read_exact(10 + 2)  # drain the reserved body plus CRLF
+if sock.cmd(b"touch " + job_id + b"\r\n") != b"TOUCHED\r\n":
     failures.append("valid reserve-with-timeout 0: reserved job not touchable")
 
 job_id = put_ready_job(b"valid-one\r\n")
-r = cmd(b"reserve-with-timeout 1\r\n")
+r = sock.cmd(b"reserve-with-timeout 1\r\n")
 if r != b"RESERVED " + job_id + b" 9\r\n":
     failures.append("valid reserve-with-timeout 1: expected RESERVED %s 9 (got %r)"
                     % (job_id, r))
 else:
-    read_bytes(sock, 9 + 2)  # drain the reserved body plus CRLF
+    sock.read_exact(9 + 2)  # drain the reserved body plus CRLF
 
 sock.close()
 
@@ -873,26 +755,10 @@ test_split_buffer() {
 check_split_buffer_boundary() {
     python3 - "$1" <<'PY'
 import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 import time
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete body")
-        response.extend(chunk)
-    return bytes(response)
 
 port = int(sys.argv[1])
 failures = []
@@ -903,11 +769,11 @@ def check(cond, message):
 
 # Case 1: 223 bytes + CRLF (225 bytes total).
 # Byte 224 is \r (fills LINE_BUF_SIZE); byte 225 is \n.
-s = socket.create_connection(("localhost", port), timeout=3)
+s = BeanstalkClient("localhost", port, timeout=3)
 s.settimeout(3)
 try:
-    s.sendall(b"x" * 223 + b"\r\n")
-    r = read_line(s)
+    s.send(b"x" * 223 + b"\r\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n", "case 1 (223+CRLF): expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
     failures.append("case 1 (223+CRLF): daemon hung waiting for endline")
@@ -915,13 +781,13 @@ finally:
     s.close()
 
 # Case 2: Chunked delivery across TCP segments.
-s = socket.create_connection(("localhost", port), timeout=3)
+s = BeanstalkClient("localhost", port, timeout=3)
 s.settimeout(3)
 try:
-    s.sendall(b"x" * 223 + b"\r")
+    s.send(b"x" * 223 + b"\r")
     time.sleep(0.05)
-    s.sendall(b"\n")
-    r = read_line(s)
+    s.send(b"\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n", "case 2 (chunked CR then LF): expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
     failures.append("case 2 (chunked CR then LF): daemon hung waiting for endline")
@@ -930,11 +796,11 @@ finally:
 
 # Case 3: Multiple boundary split: 447 bytes + CRLF (449 bytes total).
 # Byte 448 is \r (2 * LINE_BUF_SIZE); byte 449 is \n.
-s = socket.create_connection(("localhost", port), timeout=3)
+s = BeanstalkClient("localhost", port, timeout=3)
 s.settimeout(3)
 try:
-    s.sendall(b"x" * 447 + b"\r\n")
-    r = read_line(s)
+    s.send(b"x" * 447 + b"\r\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n", "case 3 (447+CRLF): expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
     failures.append("case 3 (447+CRLF): daemon hung waiting for endline")
@@ -944,18 +810,18 @@ finally:
 # Case 4: Pipelined command stream after split terminator.
 # The split command must return BAD_FORMAT\r\n, and the subsequent valid
 # command must execute cleanly rather than being consumed as the missing terminator.
-s = socket.create_connection(("localhost", port), timeout=3)
+s = BeanstalkClient("localhost", port, timeout=3)
 s.settimeout(3)
 try:
-    s.sendall(b"x" * 223 + b"\r\nput 1 0 60 4\r\ntest\r\n")
-    r1 = read_line(s)
+    s.send(b"x" * 223 + b"\r\nput 1 0 60 4\r\ntest\r\n")
+    r1 = s.read_line()
     check(r1 == b"BAD_FORMAT\r\n", "case 4 pipelining r1: expected BAD_FORMAT, got %r" % r1)
-    r2 = read_line(s)
+    r2 = s.read_line()
     check(r2.startswith(b"INSERTED "), "case 4 pipelining r2: expected INSERTED, got %r" % r2)
     if r2.startswith(b"INSERTED "):
         job_id = r2.split()[1]
-        s.sendall(b"delete " + job_id + b"\r\n")
-        r3 = read_line(s)
+        s.send(b"delete " + job_id + b"\r\n")
+        r3 = s.read_line()
         check(r3 == b"DELETED\r\n", "case 4 cleanup: expected DELETED, got %r" % r3)
 except (socket.timeout, TimeoutError):
     failures.append("case 4 pipelining: daemon hung or desynchronized stream")
@@ -994,26 +860,9 @@ test_pause_tube_delimiter() {
 
 check_pause_tube_delimiter() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete body")
-        response.extend(chunk)
-    return bytes(response)
 
 failures = []
 
@@ -1021,37 +870,21 @@ def check(cond, message):
     if not cond:
         failures.append(message)
 
-def stats_tube(sock, tube=b"default"):
-    sock.sendall(b"stats-tube " + tube + b"\r\n")
-    r = read_line(sock)
-    if not r.startswith(b"OK "):
-        return None
-    body = read_bytes(sock, int(r.split()[1]) + 2)
-    out = {}
-    for line in body.split(b"\n"):
-        line = line.strip()
-        if b": " in line:
-            k, v = line.split(b": ", 1)
-            out[k] = v
-    return out
 
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
 
-def cmd(line):
-    sock.sendall(line)
-    return read_line(sock)
 
 # Check baseline tube stats before malformed command
-s_before = stats_tube(sock, b"default")
+s_before = sock.stats_tube(b"default")
 if s_before is None:
     failures.append("setup: stats-tube default failed")
 
 # Case 1: pause-tubedefault 5\r\n (missing space between command and argument)
-r = cmd(b"pause-tubedefault 5\r\n")
+r = sock.cmd(b"pause-tubedefault 5\r\n")
 check(r == b"UNKNOWN_COMMAND\r\n", "pause-tubedefault 5: expected UNKNOWN_COMMAND (got %r)" % r)
 
-s_after = stats_tube(sock, b"default")
+s_after = sock.stats_tube(b"default")
 if s_before is not None and s_after is not None:
     check(s_after.get(b"cmd-pause-tube") == s_before.get(b"cmd-pause-tube"),
           "pause-tubedefault 5 incremented cmd-pause-tube: %r -> %r"
@@ -1060,14 +893,14 @@ if s_before is not None and s_after is not None:
           "pause-tubedefault 5 paused the tube: pause=%r" % s_after.get(b"pause"))
 
 # Case 2: pause-tube\r\n (no arguments, no space)
-r = cmd(b"pause-tube\r\n")
+r = sock.cmd(b"pause-tube\r\n")
 check(r == b"UNKNOWN_COMMAND\r\n", "pause-tube: expected UNKNOWN_COMMAND (got %r)" % r)
 
 # Case 3: Valid pause-tube command must succeed and pause the tube
-r = cmd(b"pause-tube default 5\r\n")
+r = sock.cmd(b"pause-tube default 5\r\n")
 check(r == b"PAUSED\r\n", "valid pause-tube default 5: expected PAUSED (got %r)" % r)
 
-s_paused = stats_tube(sock, b"default")
+s_paused = sock.stats_tube(b"default")
 if s_after is not None and s_paused is not None:
     expected_cmd_count = str(int(s_after.get(b"cmd-pause-tube", b"0")) + 1).encode()
     check(s_paused.get(b"cmd-pause-tube") == expected_cmd_count,
@@ -1108,7 +941,7 @@ test_quit_prefix() {
 
 check_quit_prefix() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
 failures = []
@@ -1117,50 +950,39 @@ def check(cond, message):
     if not cond:
         failures.append(message)
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            return None  # connection closed without a response
-        response.extend(chunk)
-    return bytes(response)
 
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
 
-def cmd(line):
-    sock.sendall(line)
-    return read_line(sock)
 
 def close():
     global sock
     sock.close()
 
 # Case 1: quitgarbage\r\n (malformed quit prefix)
-r = cmd(b"quitgarbage\r\n")
+r = sock.cmd(b"quitgarbage\r\n", allow_eof=True)
 check(r == b"BAD_FORMAT\r\n", "quitgarbage: expected BAD_FORMAT, got %r" % r)
 close()
 
 # Case 2: quit foo\r\n (quit prefix with a trailing argument)
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
-r = cmd(b"quit foo\r\n")
+r = sock.cmd(b"quit foo\r\n", allow_eof=True)
 check(r == b"BAD_FORMAT\r\n", "quit foo: expected BAD_FORMAT, got %r" % r)
 close()
 
 # Case 3: statsgarbage\r\n (control: OP_STATS trailing-garbage guard)
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
-r = cmd(b"statsgarbage\r\n")
+r = sock.cmd(b"statsgarbage\r\n", allow_eof=True)
 check(r == b"BAD_FORMAT\r\n", "statsgarbage: expected BAD_FORMAT, got %r" % r)
 close()
 
 # Case 4: valid quit\r\n must still close the connection without a reply
-sock = socket.create_connection(("localhost", int(sys.argv[1])), timeout=5)
+sock = BeanstalkClient("localhost", int(sys.argv[1]), timeout=5)
 sock.settimeout(5)
-sock.sendall(b"quit\r\n")
-closed = sock.recv(1) == b""
+sock.send(b"quit\r\n")
+closed = sock.read_exact(1, allow_eof=True) is None
 sock.close()
 check(closed, "valid quit did not close the connection")
 
@@ -1202,6 +1024,7 @@ test_put_oversize_trailing_garbage() {
 check_put_oversize_trailing_garbage() {
     python3 - "$1" <<'PY'
 import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
 failures = []
@@ -1210,27 +1033,19 @@ def check(cond, message):
     if not cond:
         failures.append(message)
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
 
 port = int(sys.argv[1])
 
 def connect():
-    sock = socket.create_connection(("localhost", port), timeout=3)
+    sock = BeanstalkClient("localhost", port, timeout=3)
     sock.settimeout(3)
     return sock
 
 # Case 1: just-over-limit + trailing space, no body
 s = connect()
 try:
-    s.sendall(b"put 0 0 0 65536 \r\n")
-    r = read_line(s)
+    s.send(b"put 0 0 0 65536 \r\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n",
           "put 65536 trailing space: expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
@@ -1241,8 +1056,8 @@ finally:
 # Case 2: oversize + extra argument, no body
 s = connect()
 try:
-    s.sendall(b"put 0 0 0 70000 foo\r\n")
-    r = read_line(s)
+    s.send(b"put 0 0 0 70000 foo\r\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n",
           "put 70000 foo: expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
@@ -1253,8 +1068,8 @@ finally:
 # Case 3: at-limit trailing space still BAD_FORMAT (in-limit control)
 s = connect()
 try:
-    s.sendall(b"put 0 0 0 65535 \r\n")
-    r = read_line(s)
+    s.send(b"put 0 0 0 65535 \r\n")
+    r = s.read_line()
     check(r == b"BAD_FORMAT\r\n",
           "put 65535 trailing space: expected BAD_FORMAT, got %r" % r)
 except (socket.timeout, TimeoutError):
@@ -1265,17 +1080,17 @@ finally:
 # Case 4: pipelining after malformed oversize put
 s = connect()
 try:
-    s.sendall(b"put 0 0 0 65536 \r\nput 1 0 60 4\r\ntest\r\n")
-    r1 = read_line(s)
+    s.send(b"put 0 0 0 65536 \r\nput 1 0 60 4\r\ntest\r\n")
+    r1 = s.read_line()
     check(r1 == b"BAD_FORMAT\r\n",
           "pipeline r1: expected BAD_FORMAT, got %r" % r1)
-    r2 = read_line(s)
+    r2 = s.read_line()
     check(r2.startswith(b"INSERTED "),
           "pipeline r2: expected INSERTED, got %r" % r2)
     if r2.startswith(b"INSERTED "):
         job_id = r2.split()[1]
-        s.sendall(b"delete " + job_id + b"\r\n")
-        r3 = read_line(s)
+        s.send(b"delete " + job_id + b"\r\n")
+        r3 = s.read_line()
         check(r3 == b"DELETED\r\n",
               "pipeline cleanup: expected DELETED, got %r" % r3)
 except (socket.timeout, TimeoutError):
@@ -1286,8 +1101,8 @@ finally:
 # Case 5: well-formed oversize put with body still JOB_TOO_BIG
 s = connect()
 try:
-    s.sendall(b"put 0 0 0 65536\r\n" + b"x" * 65536 + b"\r\n")
-    r = read_line(s)
+    s.send(b"put 0 0 0 65536\r\n" + b"x" * 65536 + b"\r\n")
+    r = s.read_line()
     check(r == b"JOB_TOO_BIG\r\n",
           "well-formed oversize put: expected JOB_TOO_BIG, got %r" % r)
 except (socket.timeout, TimeoutError):
@@ -1333,74 +1148,53 @@ RESERVE_JOB_PORT="$PERSIST_PORT"
 
 setup_reserve_job_persistence() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
-
-def send_cmd(sock, cmd):
-    sock.sendall(cmd)
-    return read_line(sock)
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 # 1. Buried job -> reserve-job -> release with delay 0
-send_cmd(s, b"use t1\r\n")
-send_cmd(s, b"watch t1\r\n")
-send_cmd(s, b"ignore default\r\n")
-if send_cmd(s, b"put 0 0 0 5\r\njob01\r\n") != b"INSERTED 1\r\n":
+s.cmd(b"use t1\r\n")
+s.cmd(b"watch t1\r\n")
+s.cmd(b"ignore default\r\n")
+if s.cmd(b"put 0 0 0 5\r\njob01\r\n") != b"INSERTED 1\r\n":
     raise SystemExit(1)
-if send_cmd(s, b"reserve\r\n") != b"RESERVED 1 5\r\n":
+if s.cmd(b"reserve\r\n") != b"RESERVED 1 5\r\n":
     raise SystemExit(1)
-read_bytes(s, 7)
-if send_cmd(s, b"bury 1 0\r\n") != b"BURIED\r\n":
+s.read_exact(7)
+if s.cmd(b"bury 1 0\r\n") != b"BURIED\r\n":
     raise SystemExit(1)
-if send_cmd(s, b"reserve-job 1\r\n") != b"RESERVED 1 5\r\n":
+if s.cmd(b"reserve-job 1\r\n") != b"RESERVED 1 5\r\n":
     raise SystemExit(1)
-read_bytes(s, 7)
-if send_cmd(s, b"release 1 0 0\r\n") != b"RELEASED\r\n":
+s.read_exact(7)
+if s.cmd(b"release 1 0 0\r\n") != b"RELEASED\r\n":
     raise SystemExit(1)
 
 # 2. Delayed job -> reserve-job -> release with delay 0
-send_cmd(s, b"use t2\r\n")
-send_cmd(s, b"watch t2\r\n")
-send_cmd(s, b"ignore t1\r\n")
-if send_cmd(s, b"put 0 3600 60 5\r\njob02\r\n") != b"INSERTED 2\r\n":
+s.cmd(b"use t2\r\n")
+s.cmd(b"watch t2\r\n")
+s.cmd(b"ignore t1\r\n")
+if s.cmd(b"put 0 3600 60 5\r\njob02\r\n") != b"INSERTED 2\r\n":
     raise SystemExit(1)
-if send_cmd(s, b"reserve-job 2\r\n") != b"RESERVED 2 5\r\n":
+if s.cmd(b"reserve-job 2\r\n") != b"RESERVED 2 5\r\n":
     raise SystemExit(1)
-read_bytes(s, 7)
-if send_cmd(s, b"release 2 0 0\r\n") != b"RELEASED\r\n":
+s.read_exact(7)
+if s.cmd(b"release 2 0 0\r\n") != b"RELEASED\r\n":
     raise SystemExit(1)
 
 # 3. Buried job -> reserve-job -> in-flight during restart
-send_cmd(s, b"use t3\r\n")
-send_cmd(s, b"watch t3\r\n")
-send_cmd(s, b"ignore t2\r\n")
-if send_cmd(s, b"put 0 0 3600 5\r\njob03\r\n") != b"INSERTED 3\r\n":
+s.cmd(b"use t3\r\n")
+s.cmd(b"watch t3\r\n")
+s.cmd(b"ignore t2\r\n")
+if s.cmd(b"put 0 0 3600 5\r\njob03\r\n") != b"INSERTED 3\r\n":
     raise SystemExit(1)
-if send_cmd(s, b"reserve\r\n") != b"RESERVED 3 5\r\n":
+if s.cmd(b"reserve\r\n") != b"RESERVED 3 5\r\n":
     raise SystemExit(1)
-read_bytes(s, 7)
-if send_cmd(s, b"bury 3 0\r\n") != b"BURIED\r\n":
+s.read_exact(7)
+if s.cmd(b"bury 3 0\r\n") != b"BURIED\r\n":
     raise SystemExit(1)
 
 PY
@@ -1415,14 +1209,13 @@ fi
 persistent_hold_reserved() {
     python3 - "$1" "$SCRATCH_DIR/reserve-job-ready" <<'PY' &
 import os
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 import threading
 
-with socket.create_connection(("localhost", int(sys.argv[1])), timeout=5) as sock:
-    sock.sendall(b"reserve-job 3\r\n")
-    stream = sock.makefile("rb")
-    if stream.readline() != b"RESERVED 3 5\r\n" or stream.read(7) != b"job03\r\n":
+with BeanstalkClient("localhost", int(sys.argv[1]), timeout=5) as sock:
+    sock.send(b"reserve-job 3\r\n")
+    if sock.read_line() != b"RESERVED 3 5\r\n" or sock.read_exact(7) != b"job03\r\n":
         raise SystemExit("reserve-job 3 failed")
     with open(sys.argv[2] + ".tmp", "w") as ready:
         ready.write("ready\n")
@@ -1449,84 +1242,63 @@ RESERVE_JOB_PORT="$PERSIST_PORT"
 
 verify_reserve_job_persistence() {
     python3 - "$1" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
-
-def send_cmd(sock, cmd):
-    sock.sendall(cmd)
-    return read_line(sock)
 
 failures = []
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 def peek_tube(sock, cmd):
-    r = send_cmd(sock, cmd)
+    r = sock.cmd(cmd)
     if r.startswith(b"FOUND "):
         parts = r.split()
         size = int(parts[2])
-        read_bytes(sock, size + 2)
+        sock.read_exact(size + 2)
     return r
 
 # Verify Job 1 (released from buried) recovered as Ready
-r = send_cmd(s, b"peek 1\r\n")
+r = s.cmd(b"peek 1\r\n")
 if r != b"FOUND 1 5\r\n":
     failures.append("job 1 peek returned %r (expected FOUND 1 5)" % r)
 else:
-    body = read_bytes(s, 7)
+    body = s.read_exact(7)
     if body != b"job01\r\n":
         failures.append("job 1 body returned %r (expected b'job01\\r\\n')" % body)
-    stats = send_cmd(s, b"stats-job 1\r\n")
+    stats = s.cmd(b"stats-job 1\r\n")
     if stats.startswith(b"OK "):
-        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
         if "state: ready" not in stats_body:
             failures.append("job 1 stats-job state is not ready: %s" % stats_body)
 
 # Verify Job 2 (released from delayed) recovered as Ready
-r = send_cmd(s, b"peek 2\r\n")
+r = s.cmd(b"peek 2\r\n")
 if r != b"FOUND 2 5\r\n":
     failures.append("job 2 peek returned %r (expected FOUND 2 5)" % r)
 else:
-    body = read_bytes(s, 7)
+    body = s.read_exact(7)
     if body != b"job02\r\n":
         failures.append("job 2 body returned %r (expected b'job02\\r\\n')" % body)
-    stats = send_cmd(s, b"stats-job 2\r\n")
+    stats = s.cmd(b"stats-job 2\r\n")
     if stats.startswith(b"OK "):
-        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
         if "state: ready" not in stats_body:
             failures.append("job 2 stats-job state is not ready: %s" % stats_body)
 
 # Verify Job 3 (in-flight when stopped) recovered as Ready
-r = send_cmd(s, b"peek 3\r\n")
+r = s.cmd(b"peek 3\r\n")
 if r != b"FOUND 3 5\r\n":
     failures.append("job 3 peek returned %r (expected FOUND 3 5)" % r)
 else:
-    body = read_bytes(s, 7)
+    body = s.read_exact(7)
     if body != b"job03\r\n":
         failures.append("job 3 body returned %r (expected b'job03\\r\\n')" % body)
-    stats = send_cmd(s, b"stats-job 3\r\n")
+    stats = s.cmd(b"stats-job 3\r\n")
     if stats.startswith(b"OK "):
-        stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
         if "state: ready" not in stats_body.splitlines():
             failures.append("job 3 stats-job state is not ready: %s" % stats_body)
     else:
@@ -1534,7 +1306,7 @@ else:
 
 # Verify buried and delayed queues are empty
 for tube in [b"default", b"t1", b"t2", b"t3"]:
-    send_cmd(s, b"use " + tube + b"\r\n")
+    s.cmd(b"use " + tube + b"\r\n")
     b = peek_tube(s, b"peek-buried\r\n")
     if b != b"NOT_FOUND\r\n":
         failures.append("tube %s peek-buried returned %r (expected NOT_FOUND)" % (tube.decode(), b))
@@ -1588,52 +1360,31 @@ RELEASE_PORT=$(start_beanstalkd \
 # first runs the put/reserve/release sequence from the issue.
 release_persistence_stats() {
     python3 - "$1" "$2" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
-
-def send_cmd(sock, cmd):
-    sock.sendall(cmd)
-    return read_line(sock)
 
 def expect(sock, cmd, want):
-    got = send_cmd(sock, cmd)
+    got = sock.cmd(cmd)
     if got != want:
         print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
         raise SystemExit(1)
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 if sys.argv[2] == "setup":
     expect(s, b"put 100 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
     expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
-    read_bytes(s, 7)
+    s.read_exact(7)
     expect(s, b"release 1 10 0\r\n", b"RELEASED\r\n")
 
-stats = send_cmd(s, b"stats-job 1\r\n")
+stats = s.cmd(b"stats-job 1\r\n")
 if not stats.startswith(b"OK "):
     print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
     raise SystemExit(1)
-stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
 for line in stats_body.splitlines():
     if line.split(":")[0] in ("state", "pri", "reserves", "releases"):
         print(line)
@@ -1710,52 +1461,31 @@ BURY_REPLAY_PORT=$(start_beanstalkd \
 # first runs the put/reserve/bury sequence from the issue.
 bury_replay_stats() {
     python3 - "$1" "$2" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
-
-def send_cmd(sock, cmd):
-    sock.sendall(cmd)
-    return read_line(sock)
 
 def expect(sock, cmd, want):
-    got = send_cmd(sock, cmd)
+    got = sock.cmd(cmd)
     if got != want:
         print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
         raise SystemExit(1)
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 if sys.argv[2] == "setup":
     expect(s, b"put 0 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
     expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
-    read_bytes(s, 7)
+    s.read_exact(7)
     expect(s, b"bury 1 0\r\n", b"BURIED\r\n")
 
-stats = send_cmd(s, b"stats-job 1\r\n")
+stats = s.cmd(b"stats-job 1\r\n")
 if not stats.startswith(b"OK "):
     print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
     raise SystemExit(1)
-stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
 for line in stats_body.splitlines():
     if line.split(":")[0] in ("state", "buries"):
         print(line)
@@ -1834,58 +1564,37 @@ TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
 # first puts a job with TTR 1, reserves it, and lets the reservation expire.
 ttr_timeout_stats() {
     python3 - "$1" "$2" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 import time
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
-
-def send_cmd(sock, cmd):
-    sock.sendall(cmd)
-    return read_line(sock)
 
 def expect(sock, cmd, want):
-    got = send_cmd(sock, cmd)
+    got = sock.cmd(cmd)
     if got != want:
         print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
         raise SystemExit(1)
 
 def job_stats(sock):
-    stats = send_cmd(sock, b"stats-job 1\r\n")
+    stats = sock.cmd(b"stats-job 1\r\n")
     if not stats.startswith(b"OK "):
         print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
         raise SystemExit(1)
-    stats_body = read_bytes(sock, int(stats.split()[1]) + 2).decode()
+    stats_body = sock.read_exact(int(stats.split()[1]) + 2).decode()
     return dict(
         line.split(": ", 1) for line in stats_body.splitlines() if ": " in line
     )
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 if sys.argv[2] == "setup":
     expect(s, b"put 0 0 1 3\r\nttr\r\n", b"INSERTED 1\r\n")
-    worker = socket.create_connection(("localhost", port), timeout=5)
+    worker = BeanstalkClient("localhost", port, timeout=5)
     worker.settimeout(5)
     expect(worker, b"reserve\r\n", b"RESERVED 1 3\r\n")
-    read_bytes(worker, 5)
+    worker.read_exact(5)
     # Keep the worker connected without deleting or releasing, so the job
     # returns to ready through TTR expiry rather than through disconnection.
     deadline = time.time() + 10
@@ -1973,57 +1682,40 @@ MAX_JOB_SIZE_REPLAY_PORT=$(start_beanstalkd \
 # prints the id and body length of every job, plus the ready count.
 max_job_size_replay_jobs() {
     python3 - "$1" "$2" <<'PY'
-import socket
+from tests.beanstalk_client import BeanstalkClient
 import sys
 
 SIZES = [5, 65535, 65534, 65533, 5]
 
-def read_line(sock):
-    response = bytearray()
-    while not response.endswith(b"\r\n"):
-        chunk = sock.recv(1)
-        if not chunk:
-            raise RuntimeError("connection closed before a complete response")
-        response.extend(chunk)
-    return bytes(response)
-
-def read_bytes(sock, length):
-    response = bytearray()
-    while len(response) < length:
-        chunk = sock.recv(length - len(response))
-        if not chunk:
-            raise RuntimeError("connection closed before the complete job body")
-        response.extend(chunk)
-    return bytes(response)
 
 def body(job_id, size):
     return (b"%d" % job_id * size)[:size]
 
 port = int(sys.argv[1])
-s = socket.create_connection(("localhost", port), timeout=5)
+s = BeanstalkClient("localhost", port, timeout=5)
 s.settimeout(5)
 
 if sys.argv[2] == "setup":
     for job_id, size in enumerate(SIZES, 1):
-        s.sendall(b"put 0 0 60 %d\r\n%s\r\n" % (size, body(job_id, size)))
-        got = read_line(s)
+        s.send(b"put 0 0 60 %d\r\n%s\r\n" % (size, body(job_id, size)))
+        got = s.read_line()
         if got != b"INSERTED %d\r\n" % job_id:
             print("put of %d bytes returned %r" % (size, got), file=sys.stderr)
             raise SystemExit(1)
 
 for job_id, size in enumerate(SIZES, 1):
-    s.sendall(b"peek %d\r\n" % job_id)
-    got = read_line(s)
+    s.send(b"peek %d\r\n" % job_id)
+    got = s.read_line()
     if not got.startswith(b"FOUND "):
         print("job %d: %s" % (job_id, got.decode().strip()))
         continue
-    data = read_bytes(s, int(got.split()[2]) + 2)[:-2]
+    data = s.read_exact(int(got.split()[2]) + 2)[:-2]
     intact = "intact" if data == body(job_id, size) else "corrupt"
     print("job %d: %d bytes %s" % (job_id, len(data), intact))
 
-s.sendall(b"stats\r\n")
-stats = read_line(s)
-stats_body = read_bytes(s, int(stats.split()[1]) + 2).decode()
+s.send(b"stats\r\n")
+stats = s.read_line()
+stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
 for line in stats_body.splitlines():
     if line.split(":")[0] == "current-jobs-ready":
         print(line)
