@@ -5,6 +5,7 @@ quit-prefix.c
 release-wal-persistence.c
 replay-bury-count.c
 replay-max-job-size.c
+replay-body-size.c
 reserve-job-wal-persistence.c
 reserve-timeout-bound.c
 split-buffer-hang.c
