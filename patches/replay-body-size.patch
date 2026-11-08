@@ -1,0 +1,46 @@
+Reject WAL records that change an existing job's body size (issue #107).
+
+A job's body allocation is fixed by its first live record. Both WAL readers
+previously assigned the incoming record before comparing body_size, making
+their full-record checks ineffective; short records also bypassed the check
+entirely. A later readfull could therefore write more bytes than the original
+allocation holds.
+
+Check the immutable size as each existing live record is accepted, before
+updating job metadata and regardless of whether the record carries a body.
+Keep the fresh-job size check separate so legal records up to
+job_data_size_limit + CRLF remain accepted.
+
+--- a/file.c
++++ b/file.c
+@@ -152,0 +153,12 @@
++static int
++job_body_size_matches(File *f, Job *j, int32 body_size, int adj)
++{
++    if (j->r.body_size == body_size)
++        return 1;
++
++    warnpos(f, adj, "job %"PRIu64" size changed", j->r.id);
++    warnpos(f, adj, "was %"PRId32", now %"PRId32, j->r.body_size, body_size);
++    return 0;
++}
++
++
+@@ -224,0 +238,2 @@
++        if (j && !job_body_size_matches(f, j, jr.body_size, -r))
++            goto Error;
+@@ -246,5 +260,0 @@
+-            if (jr.body_size != j->r.body_size) {
+-                warnpos(f, -r, "job %"PRIu64" size changed", j->r.id);
+-                warnpos(f, -r, "was %d, now %d", j->r.body_size, jr.body_size);
+-                goto Error;
+-            }
+@@ -351,0 +362,2 @@
++        if (j && !job_body_size_matches(f, j, jr.body_size, -r))
++            goto Error;
+@@ -384,5 +395,0 @@
+-            if (jr.body_size != j->r.body_size) {
+-                warnpos(f, -r, "job %"PRIu64" size changed", j->r.id);
+-                warnpos(f, -r, "was %"PRId32", now %"PRId32, j->r.body_size, jr.body_size);
+-                goto Error;
+-            }

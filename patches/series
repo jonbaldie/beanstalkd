@@ -6,6 +6,7 @@ quit-prefix.patch
 release-wal-persistence.patch
 replay-bury-count.patch
 replay-max-job-size.patch
+replay-body-size.patch
 reserve-job-wal-persistence.patch
 reserve-timeout-bound.patch
 split-buffer-hang.patch
