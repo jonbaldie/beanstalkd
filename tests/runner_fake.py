@@ -29,7 +29,7 @@ def finish(value='', status=0):
 
 if Path(sys.argv[0]).name == 'python3':
     source = args[1] if args[0] == '-c' else sys.stdin.read()
-    if args[0] == '-c' and "s.sendall(b'stats" in source:
+    if "client.stats()" in source:
         record('client', 'readiness')
         finish()
     if 'threading.Event().wait(120)' in source:

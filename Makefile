@@ -20,6 +20,7 @@ test: build
 	./test_ct_manifest.sh
 	./test_test.sh
 	python3 tests/test_runner_cli.py
+	python3 tests/test_beanstalk_client.py
 	./test_makefile.sh
 	./test_cleanup.sh "$(IMAGE)"
 	./test_resource_receipts.sh "$(IMAGE)"
