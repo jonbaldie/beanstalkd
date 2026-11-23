@@ -294,13 +294,9 @@ from tests.beanstalk_client import BeanstalkClient
 import sys
 
 with BeanstalkClient("localhost", int(sys.argv[1]), timeout=5) as sock:
-    sock.send(b"stats-job 3\r\n")
-    header = sock.read_line()
-    if not header.startswith(b"OK "):
-        raise SystemExit("stats-job 3 failed: %r" % header)
-    body = sock.read_exact(int(header.split()[1]) + 2)
-    if b"state: reserved" not in body.splitlines():
-        raise SystemExit("stats-job 3 is not reserved: %r" % body)
+    snapshot = sock.stats_job(3)
+    if snapshot.get(b"state") != b"reserved":
+        raise SystemExit("stats-job 3 is not reserved: %r" % snapshot)
 PY
 }
 
@@ -322,6 +318,59 @@ persistent_restart() {
     fi
     harness_docker rm "$PERSIST_NAME" > /dev/null || return 1
     PERSIST_PORT=$("$PERSIST_START_CALLBACK") || return 1
+}
+
+# Shared fixture for the unified WAL replay conformance cases (issue #74):
+# a persistent daemon on a fresh named volume with byte-fsync disabled.
+start_job_persistence_fixture() {
+    start_beanstalkd --name "$PERSIST_NAME" \
+        --volume "$PERSIST_VOLUME:/data" -- beanstalkd -b /data -f 0
+}
+
+# Unified job persistence conformance runner (issue #74). Runs the named
+# tests.persistence case: setup against a fresh persistent daemon, check
+# job state before the restart, restart through the persistent helper
+# (#64) the case's number of times, and check after each restart. The
+# setup actions and expected stats-job fields live in the case table in
+# tests/persistence.py; a mismatch prints a per-field diff there.
+run_persistence_case() {
+    persistence_case="$1"
+    persistence_container="$2"
+    persistence_volume="$3"
+    persistence_pass="$4"
+    if ! persistent_start "$persistence_container" "$persistence_volume" \
+            start_job_persistence_fixture; then
+        exit 1
+    fi
+    persistence_port="$PERSIST_PORT"
+    if ! python3 -m tests.persistence "$persistence_case" setup \
+            "$persistence_port"; then
+        report_container_failure "$persistence_container" \
+            "failed setting up $persistence_case test job."
+        exit 1
+    fi
+    if ! python3 -m tests.persistence "$persistence_case" check \
+            "$persistence_port" 0; then
+        echo "FAIL: $persistence_case job stats before restart did not match expected fields."
+        exit 1
+    fi
+    persistence_restarts=$(python3 -m tests.persistence \
+        "$persistence_case" restarts) || exit 1
+    persistence_restart=1
+    while [ "$persistence_restart" -le "$persistence_restarts" ]; do
+        echo "Restarting persistent beanstalkd container for $persistence_case check ($persistence_restart of $persistence_restarts)..."
+        if ! persistent_restart; then
+            exit 1
+        fi
+        persistence_port="$PERSIST_PORT"
+        if ! python3 -m tests.persistence "$persistence_case" check \
+                "$persistence_port" "$persistence_restart"; then
+            echo "FAIL: $persistence_case WAL persistence regression."
+            exit 1
+        fi
+        persistence_restart=$((persistence_restart + 1))
+    done
+    echo "PASS: $persistence_pass"
 }
 
 test_stats() {
@@ -1139,65 +1188,13 @@ test_reserve_job_persistence() {
 
 echo "Checking reserve-job WAL persistence across container restart..."
 
-start_reserve_job_fixture() {
-    start_beanstalkd --name "$PERSIST_NAME" \
-        --volume "$PERSIST_VOLUME:/data" -- beanstalkd -b /data -f 0
-}
-persistent_start "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" "$RESERVE_JOB_PERSISTENCE_VOLUME" start_reserve_job_fixture
+persistent_start "$RESERVE_JOB_PERSISTENCE_CONTAINER_NAME" "$RESERVE_JOB_PERSISTENCE_VOLUME" start_job_persistence_fixture
 RESERVE_JOB_PORT="$PERSIST_PORT"
 
+# Setup transitions live in tests/persistence.py (issue #74); the held
+# client below keeps job 3 in-flight across the restart (issue #64).
 setup_reserve_job_persistence() {
-    python3 - "$1" <<'PY'
-from tests.beanstalk_client import BeanstalkClient
-import sys
-
-
-port = int(sys.argv[1])
-s = BeanstalkClient("localhost", port, timeout=5)
-s.settimeout(5)
-
-# 1. Buried job -> reserve-job -> release with delay 0
-s.cmd(b"use t1\r\n")
-s.cmd(b"watch t1\r\n")
-s.cmd(b"ignore default\r\n")
-if s.cmd(b"put 0 0 0 5\r\njob01\r\n") != b"INSERTED 1\r\n":
-    raise SystemExit(1)
-if s.cmd(b"reserve\r\n") != b"RESERVED 1 5\r\n":
-    raise SystemExit(1)
-s.read_exact(7)
-if s.cmd(b"bury 1 0\r\n") != b"BURIED\r\n":
-    raise SystemExit(1)
-if s.cmd(b"reserve-job 1\r\n") != b"RESERVED 1 5\r\n":
-    raise SystemExit(1)
-s.read_exact(7)
-if s.cmd(b"release 1 0 0\r\n") != b"RELEASED\r\n":
-    raise SystemExit(1)
-
-# 2. Delayed job -> reserve-job -> release with delay 0
-s.cmd(b"use t2\r\n")
-s.cmd(b"watch t2\r\n")
-s.cmd(b"ignore t1\r\n")
-if s.cmd(b"put 0 3600 60 5\r\njob02\r\n") != b"INSERTED 2\r\n":
-    raise SystemExit(1)
-if s.cmd(b"reserve-job 2\r\n") != b"RESERVED 2 5\r\n":
-    raise SystemExit(1)
-s.read_exact(7)
-if s.cmd(b"release 2 0 0\r\n") != b"RELEASED\r\n":
-    raise SystemExit(1)
-
-# 3. Buried job -> reserve-job -> in-flight during restart
-s.cmd(b"use t3\r\n")
-s.cmd(b"watch t3\r\n")
-s.cmd(b"ignore t2\r\n")
-if s.cmd(b"put 0 0 3600 5\r\njob03\r\n") != b"INSERTED 3\r\n":
-    raise SystemExit(1)
-if s.cmd(b"reserve\r\n") != b"RESERVED 3 5\r\n":
-    raise SystemExit(1)
-s.read_exact(7)
-if s.cmd(b"bury 3 0\r\n") != b"BURIED\r\n":
-    raise SystemExit(1)
-
-PY
+    python3 -m tests.persistence reserve_job_persistence setup "$1"
 }
 
 if ! setup_reserve_job_persistence "$RESERVE_JOB_PORT"; then
@@ -1240,85 +1237,9 @@ echo "Restarting persistent beanstalkd container for reserve-job check..."
 persistent_restart
 RESERVE_JOB_PORT="$PERSIST_PORT"
 
+# Verification uses the shared snapshot/diff code in tests/persistence.py.
 verify_reserve_job_persistence() {
-    python3 - "$1" <<'PY'
-from tests.beanstalk_client import BeanstalkClient
-import sys
-
-
-failures = []
-
-port = int(sys.argv[1])
-s = BeanstalkClient("localhost", port, timeout=5)
-s.settimeout(5)
-
-def peek_tube(sock, cmd):
-    r = sock.cmd(cmd)
-    if r.startswith(b"FOUND "):
-        parts = r.split()
-        size = int(parts[2])
-        sock.read_exact(size + 2)
-    return r
-
-# Verify Job 1 (released from buried) recovered as Ready
-r = s.cmd(b"peek 1\r\n")
-if r != b"FOUND 1 5\r\n":
-    failures.append("job 1 peek returned %r (expected FOUND 1 5)" % r)
-else:
-    body = s.read_exact(7)
-    if body != b"job01\r\n":
-        failures.append("job 1 body returned %r (expected b'job01\\r\\n')" % body)
-    stats = s.cmd(b"stats-job 1\r\n")
-    if stats.startswith(b"OK "):
-        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
-        if "state: ready" not in stats_body:
-            failures.append("job 1 stats-job state is not ready: %s" % stats_body)
-
-# Verify Job 2 (released from delayed) recovered as Ready
-r = s.cmd(b"peek 2\r\n")
-if r != b"FOUND 2 5\r\n":
-    failures.append("job 2 peek returned %r (expected FOUND 2 5)" % r)
-else:
-    body = s.read_exact(7)
-    if body != b"job02\r\n":
-        failures.append("job 2 body returned %r (expected b'job02\\r\\n')" % body)
-    stats = s.cmd(b"stats-job 2\r\n")
-    if stats.startswith(b"OK "):
-        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
-        if "state: ready" not in stats_body:
-            failures.append("job 2 stats-job state is not ready: %s" % stats_body)
-
-# Verify Job 3 (in-flight when stopped) recovered as Ready
-r = s.cmd(b"peek 3\r\n")
-if r != b"FOUND 3 5\r\n":
-    failures.append("job 3 peek returned %r (expected FOUND 3 5)" % r)
-else:
-    body = s.read_exact(7)
-    if body != b"job03\r\n":
-        failures.append("job 3 body returned %r (expected b'job03\\r\\n')" % body)
-    stats = s.cmd(b"stats-job 3\r\n")
-    if stats.startswith(b"OK "):
-        stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
-        if "state: ready" not in stats_body.splitlines():
-            failures.append("job 3 stats-job state is not ready: %s" % stats_body)
-    else:
-        failures.append("job 3 stats-job returned %r (expected OK)" % stats)
-
-# Verify buried and delayed queues are empty
-for tube in [b"default", b"t1", b"t2", b"t3"]:
-    s.cmd(b"use " + tube + b"\r\n")
-    b = peek_tube(s, b"peek-buried\r\n")
-    if b != b"NOT_FOUND\r\n":
-        failures.append("tube %s peek-buried returned %r (expected NOT_FOUND)" % (tube.decode(), b))
-    d = peek_tube(s, b"peek-delayed\r\n")
-    if d != b"NOT_FOUND\r\n":
-        failures.append("tube %s peek-delayed returned %r (expected NOT_FOUND)" % (tube.decode(), d))
-
-if failures:
-    for f in failures:
-        print("reserve-job WAL persistence regression: " + f, file=sys.stderr)
-    raise SystemExit(2)
-PY
+    python3 -m tests.persistence reserve_job_persistence check "$1"
 }
 
 if ! verify_reserve_job_persistence "$RESERVE_JOB_PORT"; then
@@ -1342,96 +1263,12 @@ test_release_persistence() {
 #
 # A job released with delay 0 must persist its new priority and counters to
 # the WAL so that on restart, stats-job reports them unchanged.
+# Expressed as a case in the unified conformance table (issue #74).
 
 echo "Checking release with delay 0 WAL persistence across container restart..."
-
-if harness_docker volume inspect "$RELEASE_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
-    echo "FAIL: volume $RELEASE_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
-    exit 1
-fi
-harness_docker volume create --label "$OWNER_LABEL" "$RELEASE_PERSISTENCE_VOLUME" > /dev/null
-
-RELEASE_PORT=$(start_beanstalkd \
-    --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$RELEASE_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
-
-# Prints the stats-job fields this check compares, one per line. With "setup",
-# first runs the put/reserve/release sequence from the issue.
-release_persistence_stats() {
-    python3 - "$1" "$2" <<'PY'
-from tests.beanstalk_client import BeanstalkClient
-import sys
-
-
-def expect(sock, cmd, want):
-    got = sock.cmd(cmd)
-    if got != want:
-        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
-        raise SystemExit(1)
-
-port = int(sys.argv[1])
-s = BeanstalkClient("localhost", port, timeout=5)
-s.settimeout(5)
-
-if sys.argv[2] == "setup":
-    expect(s, b"put 100 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
-    expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
-    s.read_exact(7)
-    expect(s, b"release 1 10 0\r\n", b"RELEASED\r\n")
-
-stats = s.cmd(b"stats-job 1\r\n")
-if not stats.startswith(b"OK "):
-    print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
-    raise SystemExit(1)
-stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
-for line in stats_body.splitlines():
-    if line.split(":")[0] in ("state", "pri", "reserves", "releases"):
-        print(line)
-PY
-}
-
-if ! RELEASE_STATS_BEFORE=$(release_persistence_stats "$RELEASE_PORT" setup); then
-    report_container_failure "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
-        "failed setting up release persistence test job."
-    exit 1
-fi
-
-EXPECTED_RELEASE_STATS="state: ready
-pri: 10
-reserves: 1
-releases: 1"
-if [ "$RELEASE_STATS_BEFORE" != "$EXPECTED_RELEASE_STATS" ]; then
-    echo "FAIL: released job stats before restart were:"
-    echo "$RELEASE_STATS_BEFORE"
-    echo "expected:"
-    echo "$EXPECTED_RELEASE_STATS"
-    exit 1
-fi
-
-echo "Restarting persistent beanstalkd container for release check..."
-harness_docker stop -t 15 "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
-harness_docker rm "$RELEASE_PERSISTENCE_CONTAINER_NAME" > /dev/null
-RELEASE_PORT=$(start_beanstalkd \
-    --name "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$RELEASE_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
-
-if ! RELEASE_STATS_AFTER=$(release_persistence_stats "$RELEASE_PORT" verify); then
-    report_container_failure "$RELEASE_PERSISTENCE_CONTAINER_NAME" \
-        "failed reading released job stats after restart."
-    exit 1
-fi
-
-if [ "$RELEASE_STATS_AFTER" != "$EXPECTED_RELEASE_STATS" ]; then
-    echo "FAIL: release with delay 0 WAL persistence regression; job stats after restart were:"
-    echo "$RELEASE_STATS_AFTER"
-    echo "expected:"
-    echo "$EXPECTED_RELEASE_STATS"
-    exit 1
-fi
-
-echo "PASS: release with delay 0 persists priority and counters across container restart."
+run_persistence_case release_persistence \
+    "$RELEASE_PERSISTENCE_CONTAINER_NAME" "$RELEASE_PERSISTENCE_VOLUME" \
+    "release with delay 0 persists priority and counters across container restart."
 }
 
 test_bury_replay() {
@@ -1443,96 +1280,13 @@ test_bury_replay() {
 # bury count, so every restart reported one extra bury in stats-job.
 #
 # A job buried once must report buries: 1 after each restart.
+# Expressed as a case in the unified conformance table (issue #74), with
+# two restarts to prove the count does not drift on replay.
 
 echo "Checking buried job bury count across container restarts..."
-
-if harness_docker volume inspect "$BURY_REPLAY_VOLUME" > /dev/null 2>&1; then
-    echo "FAIL: volume $BURY_REPLAY_VOLUME already exists; refusing to adopt a volume this run did not create."
-    exit 1
-fi
-harness_docker volume create --label "$OWNER_LABEL" "$BURY_REPLAY_VOLUME" > /dev/null
-
-BURY_REPLAY_PORT=$(start_beanstalkd \
-    --name "$BURY_REPLAY_CONTAINER_NAME" \
-    --volume "$BURY_REPLAY_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
-
-# Prints the stats-job fields this check compares, one per line. With "setup",
-# first runs the put/reserve/bury sequence from the issue.
-bury_replay_stats() {
-    python3 - "$1" "$2" <<'PY'
-from tests.beanstalk_client import BeanstalkClient
-import sys
-
-
-def expect(sock, cmd, want):
-    got = sock.cmd(cmd)
-    if got != want:
-        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
-        raise SystemExit(1)
-
-port = int(sys.argv[1])
-s = BeanstalkClient("localhost", port, timeout=5)
-s.settimeout(5)
-
-if sys.argv[2] == "setup":
-    expect(s, b"put 0 0 0 5\r\nhello\r\n", b"INSERTED 1\r\n")
-    expect(s, b"reserve\r\n", b"RESERVED 1 5\r\n")
-    s.read_exact(7)
-    expect(s, b"bury 1 0\r\n", b"BURIED\r\n")
-
-stats = s.cmd(b"stats-job 1\r\n")
-if not stats.startswith(b"OK "):
-    print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
-    raise SystemExit(1)
-stats_body = s.read_exact(int(stats.split()[1]) + 2).decode()
-for line in stats_body.splitlines():
-    if line.split(":")[0] in ("state", "buries"):
-        print(line)
-PY
-}
-
-if ! BURY_REPLAY_STATS=$(bury_replay_stats "$BURY_REPLAY_PORT" setup); then
-    report_container_failure "$BURY_REPLAY_CONTAINER_NAME" \
-        "failed setting up bury replay test job."
-    exit 1
-fi
-
-EXPECTED_BURY_REPLAY_STATS="state: buried
-buries: 1"
-if [ "$BURY_REPLAY_STATS" != "$EXPECTED_BURY_REPLAY_STATS" ]; then
-    echo "FAIL: buried job stats before restart were:"
-    echo "$BURY_REPLAY_STATS"
-    echo "expected:"
-    echo "$EXPECTED_BURY_REPLAY_STATS"
-    exit 1
-fi
-
-for restart in 1 2; do
-    echo "Restarting persistent beanstalkd container for bury count check ($restart of 2)..."
-    harness_docker stop -t 15 "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
-    harness_docker rm "$BURY_REPLAY_CONTAINER_NAME" > /dev/null
-    BURY_REPLAY_PORT=$(start_beanstalkd \
-        --name "$BURY_REPLAY_CONTAINER_NAME" \
-        --volume "$BURY_REPLAY_VOLUME:/data" \
-        beanstalkd -b /data -f 0)
-
-    if ! BURY_REPLAY_STATS=$(bury_replay_stats "$BURY_REPLAY_PORT" verify); then
-        report_container_failure "$BURY_REPLAY_CONTAINER_NAME" \
-            "failed reading buried job stats after restart."
-        exit 1
-    fi
-
-    if [ "$BURY_REPLAY_STATS" != "$EXPECTED_BURY_REPLAY_STATS" ]; then
-        echo "FAIL: bury count replay regression; job stats after restart $restart were:"
-        echo "$BURY_REPLAY_STATS"
-        echo "expected:"
-        echo "$EXPECTED_BURY_REPLAY_STATS"
-        exit 1
-    fi
-done
-
-echo "PASS: buried job keeps its bury count across container restarts."
+run_persistence_case bury_replay \
+    "$BURY_REPLAY_CONTAINER_NAME" "$BURY_REPLAY_VOLUME" \
+    "buried job keeps its bury count across container restarts."
 }
 
 test_ttr_timeout_persistence() {
@@ -1546,111 +1300,12 @@ test_ttr_timeout_persistence() {
 #
 # A job whose reservation timed out once must report reserves: 1 and
 # timeouts: 1 after a restart.
+# Expressed as a case in the unified conformance table (issue #74).
 
 echo "Checking TTR timeout counter across container restart..."
-
-if harness_docker volume inspect "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null 2>&1; then
-    echo "FAIL: volume $TTR_TIMEOUT_PERSISTENCE_VOLUME already exists; refusing to adopt a volume this run did not create."
-    exit 1
-fi
-harness_docker volume create --label "$OWNER_LABEL" "$TTR_TIMEOUT_PERSISTENCE_VOLUME" > /dev/null
-
-TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
-    --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$TTR_TIMEOUT_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
-
-# Prints the stats-job fields this check compares, one per line. With "setup",
-# first puts a job with TTR 1, reserves it, and lets the reservation expire.
-ttr_timeout_stats() {
-    python3 - "$1" "$2" <<'PY'
-from tests.beanstalk_client import BeanstalkClient
-import sys
-import time
-
-
-def expect(sock, cmd, want):
-    got = sock.cmd(cmd)
-    if got != want:
-        print("%r returned %r (expected %r)" % (cmd, got, want), file=sys.stderr)
-        raise SystemExit(1)
-
-def job_stats(sock):
-    stats = sock.cmd(b"stats-job 1\r\n")
-    if not stats.startswith(b"OK "):
-        print("stats-job 1 returned %r (expected OK)" % stats, file=sys.stderr)
-        raise SystemExit(1)
-    stats_body = sock.read_exact(int(stats.split()[1]) + 2).decode()
-    return dict(
-        line.split(": ", 1) for line in stats_body.splitlines() if ": " in line
-    )
-
-port = int(sys.argv[1])
-s = BeanstalkClient("localhost", port, timeout=5)
-s.settimeout(5)
-
-if sys.argv[2] == "setup":
-    expect(s, b"put 0 0 1 3\r\nttr\r\n", b"INSERTED 1\r\n")
-    worker = BeanstalkClient("localhost", port, timeout=5)
-    worker.settimeout(5)
-    expect(worker, b"reserve\r\n", b"RESERVED 1 3\r\n")
-    worker.read_exact(5)
-    # Keep the worker connected without deleting or releasing, so the job
-    # returns to ready through TTR expiry rather than through disconnection.
-    deadline = time.time() + 10
-    while job_stats(s)["state"] != "ready":
-        if time.time() > deadline:
-            print("job 1 was not returned to ready after its TTR expired", file=sys.stderr)
-            raise SystemExit(1)
-        time.sleep(0.2)
-    worker.close()
-
-stats = job_stats(s)
-for field in ("state", "reserves", "timeouts"):
-    print("%s: %s" % (field, stats[field]))
-PY
-}
-
-if ! TTR_TIMEOUT_STATS=$(ttr_timeout_stats "$TTR_TIMEOUT_PERSISTENCE_PORT" setup); then
-    report_container_failure "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
-        "failed setting up TTR timeout test job."
-    exit 1
-fi
-
-EXPECTED_TTR_TIMEOUT_STATS="state: ready
-reserves: 1
-timeouts: 1"
-if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
-    echo "FAIL: timed-out job stats before restart were:"
-    echo "$TTR_TIMEOUT_STATS"
-    echo "expected:"
-    echo "$EXPECTED_TTR_TIMEOUT_STATS"
-    exit 1
-fi
-
-echo "Restarting persistent beanstalkd container for TTR timeout check..."
-harness_docker stop -t 15 "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
-harness_docker rm "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" > /dev/null
-TTR_TIMEOUT_PERSISTENCE_PORT=$(start_beanstalkd \
-    --name "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
-    --volume "$TTR_TIMEOUT_PERSISTENCE_VOLUME:/data" \
-    beanstalkd -b /data -f 0)
-
-if ! TTR_TIMEOUT_STATS=$(ttr_timeout_stats "$TTR_TIMEOUT_PERSISTENCE_PORT" verify); then
-    report_container_failure "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" \
-        "failed reading timed-out job stats after restart."
-    exit 1
-fi
-
-if [ "$TTR_TIMEOUT_STATS" != "$EXPECTED_TTR_TIMEOUT_STATS" ]; then
-    echo "FAIL: TTR timeout persistence regression; job stats after restart were:"
-    echo "$TTR_TIMEOUT_STATS"
-    echo "expected:"
-    echo "$EXPECTED_TTR_TIMEOUT_STATS"
-    exit 1
-fi
-
-echo "PASS: TTR expiry persists the timeout counter across container restart."
+run_persistence_case ttr_timeout_persistence \
+    "$TTR_TIMEOUT_PERSISTENCE_CONTAINER_NAME" "$TTR_TIMEOUT_PERSISTENCE_VOLUME" \
+    "TTR expiry persists the timeout counter across container restart."
 }
 
 test_max_job_size_replay() {

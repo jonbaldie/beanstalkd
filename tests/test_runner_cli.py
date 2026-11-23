@@ -29,9 +29,9 @@ CASES = {
     'put_oversize_trailing_garbage': (1, 0, ['put_oversize_trailing_garbage']),
     'reserve_job_persistence': (2, 1, ['setup_reserve_job', 'held', 'reserved',
                                        'verify_reserve_job']),
-    'release_persistence': (2, 1, ['release_persistence'] * 2),
-    'bury_replay': (3, 1, ['bury_replay'] * 3),
-    'ttr_timeout_persistence': (2, 1, ['ttr_timeout_persistence'] * 2),
+    'release_persistence': (2, 1, ['release_persistence'] * 3),
+    'bury_replay': (3, 1, ['bury_replay'] * 4),
+    'ttr_timeout_persistence': (2, 1, ['ttr_timeout_persistence'] * 3),
     'max_job_size_replay': (2, 1, ['max_job_size_replay'] * 2),
 }
 

@@ -76,6 +76,15 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(client.stats(), {b'a': b'1', b'b': b'2'})
             self.assertEqual(client.stats_tube(), {b'x': b'y'})
 
+    def test_stats_job(self):
+        def script(conn):
+            self.assertEqual(receive(conn, 13), b'stats-job 1\r\n')
+            body = b'---\nstate: ready\npri: 10\n'
+            conn.sendall(b'OK %d\r\n' % len(body) + body + b'\r\n')
+        with self.peer(script) as client:
+            self.assertEqual(client.stats_job(1),
+                             {b'state': b'ready', b'pri': b'10'})
+
     def test_eof_and_partial_responses(self):
         for data, reader in [(b'', lambda c: c.read_line()),
                              (b'partial', lambda c: c.read_line(allow_eof=True)),
