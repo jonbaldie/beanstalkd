@@ -90,3 +90,6 @@ class BeanstalkClient:
 
     def stats_tube(self, tube=b'default'):
         return self._stats(b'stats-tube ' + tube + b'\r\n')
+
+    def stats_job(self, job_id):
+        return self._stats(b'stats-job %d\r\n' % job_id)
