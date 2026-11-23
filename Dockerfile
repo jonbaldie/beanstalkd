@@ -48,7 +48,12 @@
 
 FROM alpine AS build
 
-RUN apk add --no-cache gcc musl-dev make patch curl
+# Upgrade base packages in the build stage too (issue #109): `apk add`
+# alone does not upgrade pre-installed packages, so build-time zlib
+# (used by curl, binutils and gcc via libz) would stay at the base
+# image's version. This mirrors the runtime stage below.
+RUN apk add --no-cache gcc musl-dev make patch curl \
+    && apk upgrade --no-cache
 
 COPY patches/ /patches/
 # Tests stay outside /patches and are appended to upstream's testserv.c so they
