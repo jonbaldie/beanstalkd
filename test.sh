@@ -8,6 +8,7 @@ non_root test_non_root shared
 install_artifact test_install_artifact shared
 expose test_expose none
 image_size test_image_size none
+zlib_fixed test_zlib_fixed shared
 kick_bounds test_kick_bounds shared
 persistence test_persistence none
 volume_leak test_volume_leak none
@@ -452,6 +453,33 @@ if [ "$IMAGE_SIZE" -gt "$MAX_BYTES" ]; then
 fi
 IMAGE_MB=$(( IMAGE_SIZE / 1048576 ))
 echo "PASS: image size is ${IMAGE_MB} MB (within 20 MB limit)."
+}
+
+test_zlib_fixed() {
+# ---- Installed zlib carries the Alpine zlib 1.4 security fixes ----
+#
+# Regression for issue #109: a cached Alpine base can ship zlib 1.3.2-r1
+# even though the Alpine 3.24 repository offers 1.4-r0. Alpine backported
+# only CVE-2026-85091 (gzwrite) into 1.3.2-r1; the remaining zlib 1.4
+# security fixes (including CVE-2026-4738) require 1.4-r0. The image must
+# therefore not ship a zlib below 1.4-r0, regardless of which zlib
+# functions the installed consumers import. See
+# docs/security/zlib-1.4-applicability.md for the per-fix assessment.
+# `apk version -t <installed> 1.4-r0` prints `<` when the installed
+# version is older, `=` or `>` when it is at or above the fixed version.
+
+echo "Checking installed zlib version..."
+ZLIB_CHECK=$(harness_docker exec "$CONTAINER_NAME" sh -c 'ver=$(apk info -v | sed -n "s/^zlib-//p"); result=$(apk version -t "$ver" 1.4-r0); printf "%s %s" "$ver" "$result"' 2>&1) || {
+    echo "FAIL: could not read installed zlib version: $ZLIB_CHECK"
+    exit 1
+}
+ZLIB_VER=${ZLIB_CHECK%% *}
+ZLIB_CMP=${ZLIB_CHECK##* }
+if [ -z "$ZLIB_VER" ] || [ "$ZLIB_CMP" = "<" ]; then
+    echo "FAIL: installed zlib '${ZLIB_VER:-<unknown>}' is below 1.4-r0 (CVE-2026-4738 fixed version)."
+    exit 1
+fi
+echo "PASS: installed zlib is $ZLIB_VER (at or above 1.4-r0)."
 }
 
 test_kick_bounds() {

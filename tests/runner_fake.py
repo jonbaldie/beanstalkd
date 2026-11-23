@@ -123,6 +123,8 @@ if args[0] == 'exec':
         finish('USER COMMAND\nbeanstalk beanstalkd')
     if args[2:] == ['test', '-f', '/install.sh']:
         finish(status=1)
+    if 'apk version -t' in ' '.join(args):
+        finish('1.4-r0 =')
 if args[0] in ('history', 'logs'):
     finish()
 if args[0] == 'stop':

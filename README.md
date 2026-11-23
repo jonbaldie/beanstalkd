@@ -36,6 +36,7 @@ Persistence cases create their own labelled containers and volumes.
 | `install_artifact` | Install script absent from filesystem and layers |
 | `expose` | Image declares port 11300 |
 | `image_size` | Image stays within 20 MB |
+| `zlib_fixed` | Installed zlib is at or above the Alpine zlib 1.4 fixed version |
 | `kick_bounds` | Malformed kick bounds preserve queue state |
 | `persistence` | Job survives restart on a named volume |
 | `volume_leak` | Default run attaches no anonymous volume |

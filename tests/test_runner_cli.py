@@ -19,6 +19,7 @@ CASES = {
     'install_artifact': (1, 0, []),
     'expose': (0, 0, []),
     'image_size': (0, 0, []),
+    'zlib_fixed': (1, 0, []),
     'kick_bounds': (1, 0, ['kick_bounds']),
     'persistence': (2, 1, ['put_persistent', 'reserve_persistent']),
     'volume_leak': (1, 0, []),
