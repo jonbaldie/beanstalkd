@@ -44,7 +44,7 @@ For an intended format or size-policy change, update the property, extraction, s
 
 ## Coverage and assumptions
 
-Last source sync commit is `25e8d389bdcafec8dc35d289456a9f6f26f27181`.
+Last source sync commit is `a7ff1ba8ebf180f0ce96e38973ffa47abe141739`.
 
 | Source | Covered behavior or reviewed assumption |
 | --- | --- |
