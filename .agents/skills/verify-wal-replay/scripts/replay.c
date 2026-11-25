@@ -1,6 +1,7 @@
 #include "dat.h"
 #include <inttypes.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -17,6 +18,8 @@ static Jobrec5 record5;
 static unsigned read_step;
 static unsigned allocations;
 static unsigned body_reads;
+static unsigned skips;
+static off_t skip_bytes;
 static _Bool legacy;
 
 ssize_t read(int fd, void *buf, size_t count)
@@ -52,6 +55,18 @@ ssize_t read(int fd, void *buf, size_t count)
         __CPROVER_assert(0, "unexpected extra read");
     }
     return count;
+}
+
+off_t lseek(int fd, off_t offset, int whence)
+{
+    (void)fd;
+    if (whence == SEEK_END)
+        return 2147483647;
+    if (offset == 0)
+        return 0;
+    skips++;
+    skip_bytes = offset;
+    return offset;
 }
 
 Job *job_find(uint64 id) { return NULL; }
@@ -94,10 +109,11 @@ int main(void)
     int err = 0;
     int result = legacy ? readrec5(&file, &list, &err) : readrec(&file, &list, &err);
     if ((size_t)(stored_size - 2) <= job_data_size_limit) {
-        __CPROVER_assert(result == 1 && err == 0 && allocations == 1 && body_reads == 1,
+        __CPROVER_assert(result == 1 && err == 0 && allocations == 1 && body_reads == 1 && skips == 0,
                          "legal stored size replays");
     } else {
-        __CPROVER_assert(result == 0 && err == 1 && allocations == 0 && body_reads == 0,
-                         "oversize rejected before allocation");
+        __CPROVER_assert(result == 1 && err == 0 && allocations == 0 && body_reads == 0 &&
+                         skips == 1 && skip_bytes == (off_t)stored_size,
+                         "oversize skipped without allocation");
     }
 }

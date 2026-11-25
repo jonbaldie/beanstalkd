@@ -12,9 +12,18 @@ Allow for the CRLF in the replay check. A stored record larger than a legal
 put could have written is still rejected. The record format is unchanged, so
 binlogs written before this fix replay correctly.
 
+Oversized records under a smaller restart limit (issue #112): the rejection
+above used to jump to Error before the framed body was read, so replay stopped
+at the oversized record and silently dropped every later job in the same
+binlog. The oversized case is always a full record (!j, so namelen is
+nonzero) and its body length is known, so instead skip exactly jr.body_size
+bytes and return success to replay the next record. The job is still not
+created and the "too big" warning is still emitted. A truncated or corrupt
+body (negative size, seek failure, or body past end of file) still takes the
+Error path and stops replay of that file. No body-sized allocation is made.
 --- a/file.c
 +++ b/file.c
-@@ -223,7 +223,9 @@
+@@ -223,12 +223,28 @@
      case Buried:
      case Delayed:
          if (!j) {
@@ -22,10 +31,30 @@ binlogs written before this fix replay correctly.
 +            /* body_size includes the trailing CRLF that put stores after a
 +             * body of up to job_data_size_limit bytes. */
 +            if ((size_t)jr.body_size > job_data_size_limit + 2) {
++                off_t cur, end;
                  warnpos(f, -r, "job %"PRIu64" is too big (%"PRId32" > %zu)",
                          jr.id,
                          jr.body_size,
-@@ -348,7 +350,9 @@
+                         job_data_size_limit);
+-                goto Error;
++                /* Framed full record: skip the body so replay continues with
++                 * the next record in this file. Treat a truncated or
++                 * unreadable body as an error and stop this file. */
++                cur = lseek(f->fd, 0, SEEK_CUR);
++                end = lseek(f->fd, 0, SEEK_END);
++                if (cur == (off_t)-1 || end == (off_t)-1 || cur > end ||
++                    jr.body_size < 0 ||
++                    (uint64_t)(end - cur) < (uint64_t)jr.body_size)
++                    goto Error;
++                /* SEEK_END moved the offset, so skip from the probed
++                 * offset rather than relative to the current one. */
++                if (lseek(f->fd, cur + jr.body_size, SEEK_SET) == (off_t)-1)
++                    goto Error;
++                return 1;
+             }
+             t = tube_find_or_make(tubename);
+             j = make_job_with_id(jr.pri, jr.delay, jr.ttr, jr.body_size,
+@@ -348,12 +364,28 @@
      case Buried:
      case Delayed:
          if (!j) {
@@ -33,6 +62,26 @@ binlogs written before this fix replay correctly.
 +            /* body_size includes the trailing CRLF that put stores after a
 +             * body of up to job_data_size_limit bytes. */
 +            if ((size_t)jr.body_size > job_data_size_limit + 2) {
++                off_t cur, end;
                  warnpos(f, -r, "job %"PRIu64" is too big (%"PRId32" > %zu)",
                          jr.id,
                          jr.body_size,
+                         job_data_size_limit);
+-                goto Error;
++                /* Framed full record: skip the body so replay continues with
++                 * the next record in this file. Treat a truncated or
++                 * unreadable body as an error and stop this file. */
++                cur = lseek(f->fd, 0, SEEK_CUR);
++                end = lseek(f->fd, 0, SEEK_END);
++                if (cur == (off_t)-1 || end == (off_t)-1 || cur > end ||
++                    jr.body_size < 0 ||
++                    (uint64_t)(end - cur) < (uint64_t)jr.body_size)
++                    goto Error;
++                /* SEEK_END moved the offset, so skip from the probed
++                 * offset rather than relative to the current one. */
++                if (lseek(f->fd, cur + jr.body_size, SEEK_SET) == (off_t)-1)
++                    goto Error;
++                return 1;
+             }
+             t = tube_find_or_make(tubename);
+             j = make_job_with_id(jr.pri, jr.delay, jr.ttr, jr.body_size,
