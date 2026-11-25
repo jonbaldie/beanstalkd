@@ -64,9 +64,25 @@ cttest_wal_replay_rejects_job_over_max_job_size()
     mustsend(fd, "put 0 0 100 11\r\n");
     mustsend(fd, "ABCDEFGHIJK\r\n");
     ckresp(fd, "INSERTED 2\r\n");
+    // Legal jobs after the oversized one, in the same binlog file. Job 2 is
+    // only oversized under the smaller restart limit, so none of these
+    // should be affected by its rejection.
+    mustsend(fd, "put 0 0 100 5\r\n");
+    mustsend(fd, "HELLO\r\n");
+    ckresp(fd, "INSERTED 3\r\n");
+    mustsend(fd, "put 0 0 100 6\r\n");
+    mustsend(fd, "WORLD!\r\n");
+    ckresp(fd, "INSERTED 4\r\n");
+    mustsend(fd, "put 0 0 100 3\r\n");
+    mustsend(fd, "abc\r\n");
+    ckresp(fd, "INSERTED 5\r\n");
+    mustsend(fd, "put 0 0 100 10\r\n");
+    mustsend(fd, "1234567890\r\n");
+    ckresp(fd, "INSERTED 6\r\n");
 
     // Replay under a smaller limit: job 2 is bigger than any put could have
-    // stored, so it must still be rejected.
+    // stored, so it must still be rejected, while every legal job in the
+    // file (including those written after it) must survive.
     kill_srvpid();
     job_data_size_limit = 10;
     port = SERVER();
@@ -74,4 +90,8 @@ cttest_wal_replay_rejects_job_over_max_job_size()
     ckpeek(fd, 1, "A");
     mustsend(fd, "peek 2\r\n");
     ckresp(fd, "NOT_FOUND\r\n");
+    ckpeek(fd, 3, "HELLO");
+    ckpeek(fd, 4, "WORLD!");
+    ckpeek(fd, 5, "abc");
+    ckpeek(fd, 6, "1234567890");
 }

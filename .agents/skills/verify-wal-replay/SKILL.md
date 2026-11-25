@@ -30,7 +30,7 @@ Expect `baseline: PASS`. The printed evidence directory contains reconstructed s
 5. After a harness or covered-code change, run the same command with `--self-test`.
 6. Advance the sync commit only after confirming that the verification describes the code at the new commit.
 
-The self-test first checks the current code. It then edits each actual reader in reconstructed scratch `file.c` independently. Removing `+ 2` must fail `legal stored size replays`. Changing the allowance to `+ 3` must fail `oversize rejected before allocation`. Each failure must be a CBMC assertion violation, not a tool error. The runner restores the source in a `finally` block and checks the baseline again. It never edits product files in the checkout.
+The self-test first checks the current code. It then edits each actual reader in reconstructed scratch `file.c` independently. Removing `+ 2` must fail `legal stored size replays`. Changing the allowance to `+ 3` must fail `oversize skipped without allocation`. Each failure must be a CBMC assertion violation, not a tool error. The runner restores the source in a `finally` block and checks the baseline again. It never edits product files in the checkout.
 
 ## Interpret a result
 
@@ -49,7 +49,7 @@ Last source sync commit is `25e8d389bdcafec8dc35d289456a9f6f26f27181`.
 | Source | Covered behavior or reviewed assumption |
 | --- | --- |
 | `Dockerfile`, `ct-tests/run.sh`, `ct-tests/prepare-source.sh`, `ct-tests/apply-patches.sh`, `patches/series` | Shared upstream v1.13 source preparation, SHA-256 verification, patch order |
-| `patches/replay-max-job-size.patch` | Size checks in both replay readers |
+| `patches/replay-max-job-size.patch` | Size checks and framed-body skip in both replay readers |
 | Reconstructed `file.c`, `readrec`, `readrec5`, `readfull` | Complete reader control flow for a fresh full record |
 | Reconstructed `dat.h`, `Jobrec`, `JOB_DATA_SIZE_LIMIT_MAX` | Actual types and maximum size constant |
 | Reconstructed `prot.c`, `dispatch_cmd`, `OP_PUT` | Reviewed assumption that stored size is body length plus two, not symbolically executed |
@@ -66,9 +66,9 @@ The harness checks the following scope:
 - Every stored size from 2 through `INT32_MAX`, including oversize records.
 - Both WAL record formats and Ready, Reserved, Buried, and Delayed states.
 - One fresh full record with ID 1, a one-byte tube name, and no existing job. Other record fields start at zero.
-- Successful complete reads and allocation. The body-read substitute returns the requested count without copying body bytes. List and file bookkeeping are substitutes.
+- Successful complete reads and allocation. The body-read substitute returns the requested count without copying body bytes. The file-position substitute models successful seeks: position probes return 0, end-of-file returns 2^31-1, and a nonzero seek is counted as the single framed-body skip. List and file bookkeeping are substitutes.
 
-`replay.c` asserts acceptance with one allocation and one body read for legal sizes. It asserts rejection before allocation and body reads for oversize records. CBMC also checks generated safety properties. Loop unwinding is one with unwinding assertions enabled. A failed unwinding assertion is an incomplete proof, not a product bug.
+`replay.c` asserts acceptance with one allocation and one body read for legal sizes. It asserts that oversize records return success with no allocation, no body read, and exactly one framed-body skip of the stored size, so replay continues with later records. CBMC also checks generated safety properties. Loop unwinding is one with unwinding assertions enabled. A failed unwinding assertion is an incomplete proof, not a product bug.
 
 The check does not verify arbitrary metadata, existing-job update records, negative or truncated stored sizes, body bytes, allocator behavior, actual queue membership, 32-bit targets, filesystem persistence, crashes, or ordering between multiple records. It does not prove that every job survives restart. Preserve the integration tests for those broader behaviors.
 

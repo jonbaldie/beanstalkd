@@ -86,7 +86,7 @@ def main():
                 raise RuntimeError(f"Review mutation site in {name}")
             for mutation, replacement, expected in (
                 ("lost-crlf", "if ((size_t)jr.body_size > job_data_size_limit)", "legal stored size replays"),
-                ("extra-byte", "if ((size_t)jr.body_size > job_data_size_limit + 3)", "oversize rejected before allocation"),
+                ("extra-byte", "if ((size_t)jr.body_size > job_data_size_limit + 3)", "oversize skipped without allocation"),
             ):
                 broken = original[:match.start()] + match.group().replace(guard, replacement) + original[match.end():]
                 try:
